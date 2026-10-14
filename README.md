@@ -8,7 +8,7 @@ Select CSV files or a folder, enter specimen width, thickness and gauge length i
 
 Install Python 3.12 or later, run `python -m pip install -r requirements.txt`, then `python tensile_gui.py`.
 
-Width defaults to 4 mm and gauge length to 20 mm. Thickness is required. Double-click a sample to edit its dimensions. The modulus fit range defaults to 0.05-0.25% strain and uses linear regression with a free intercept. Modulus is reported in GPa.
+Width defaults to 4 mm and gauge length to 20 mm; both are common to all samples. Each imported sample gets its own thickness entry and trial-number dropdown. Enter its thickness in mm to preview stress-strain data. Selecting a trial or changing thickness updates the preview automatically. The preview includes the post-fracture tail for inspection and creates no output files. Click Run to generate Excel. The modulus fit range defaults to 0.05-0.25% strain and uses linear regression with a free intercept. Modulus is reported in GPa.
 
 Fracture detection looks for a 50% stress drop within 0.1 s, confirmed by 3-5 low points. The last local high point before that decline is used as fracture. The threshold is editable. A minimum of 20% of the trial's maximum stress prevents low-load noise triggering detection. Missing fracture results are left blank. Manual fracture strain overrides are available per trial. Toughness integrates raw engineering stress against dimensionless strain up to fracture, in MJ/m3. No preload, zero, compliance or toe correction is applied. Strain is calculated from machine stroke, not an extensometer.
 

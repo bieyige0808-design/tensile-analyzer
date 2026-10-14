@@ -1,0 +1,25 @@
+name: Build Windows app
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - run: python -m py_compile tensile_core.py tensile_gui.py
+      - run: python -m PyInstaller --noconfirm --clean --windowed --onedir --name TensileAnalyzer tensile_gui.py
+      - shell: pwsh
+        run: |
+          Copy-Item -Recurse examples dist/TensileAnalyzer/examples
+          Copy-Item README.md dist/TensileAnalyzer/README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TensileAnalyzer-Windows
+          path: dist/TensileAnalyzer
+          retention-days: 30

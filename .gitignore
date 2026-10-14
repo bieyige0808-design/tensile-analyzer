@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.xlsx
+build/
+dist/
+test_data/
+.DS_Store

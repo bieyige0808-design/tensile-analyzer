@@ -191,13 +191,14 @@ def export_excel(samples,path,smooth=False):
 def process_files(configs,path,fit_min=.05,fit_max=.25,drop=.5,smooth=False,emit=print):
     samples={}
     for config in configs:
-        file,width,thickness,length,overrides=config
+        file,width,thickness,length,overrides=config[:5]
+        sample_fit_min,sample_fit_max=config[5:7] if len(config)>=7 else (fit_min,fit_max)
         name=Path(file).stem
         if name in samples: raise ValueError(f'Duplicate sample name: {name}')
         trials=[]
         for label,raw in read_trials(file):
             emit(f'{name}: {label}')
-            result=analyze_trial(raw,width,thickness,length,fit_min,fit_max,drop,overrides.get(label))
+            result=analyze_trial(raw,width,thickness,length,sample_fit_min,sample_fit_max,drop,overrides.get(label))
             trials.append((label,result))
         samples[name]=trials
     export_excel(samples,path,smooth)

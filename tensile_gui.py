@@ -13,14 +13,14 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None
-        root.title('Tensile Analyzer 1.1'); root.geometry('1100x950')
+        root.title('Tensile Analyzer 1.3'); root.geometry('1280x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
         for text,command in [('Select files',self.files),('Select folder',self.folder),('Remove selected',self.remove)]: ttk.Button(top,text=text,command=command).pack(side='left',padx=3)
         self.params={}
         settings=ttk.LabelFrame(frame,text='Defaults and analysis settings',padding=8); settings.pack(fill='x',pady=8)
-        fields=[('Width (mm)','4'),('Gauge length (mm)','20'),('Fit min (%)','0.05'),('Fit max (%)','0.25'),('Drop (%)','50')]
+        fields=[('Width (mm)','4'),('Gauge length (mm)','20'),('Drop (%)','50')]
         for i,(name,value) in enumerate(fields):
             var=tk.StringVar(value=value); self.params[name]=var
             ttk.Label(settings,text=name).grid(row=0,column=i,padx=5)
@@ -31,9 +31,20 @@ class App:
         self.tree=ttk.Treeview(frame,columns=('name','width','thickness','length','trials'),show='headings',height=7,selectmode='extended')
         for col,title in [('name','Sample'),('width','Width (mm)'),('thickness','Thickness (mm)'),('length','Gauge length (mm)'),('trials','Trials')]: self.tree.heading(col,text=title); self.tree.column(col,width=160)
         # Keep the old tree as internal state for manual fracture and export.
-        self.sample_rows=ttk.Frame(frame); self.sample_rows.pack(fill='x')
+        samples_box=ttk.LabelFrame(frame,text='Samples / modulus fitting range (strain %)',padding=4)
+        samples_box.pack(fill='x')
+        self.samples_canvas=tk.Canvas(samples_box,height=190,highlightthickness=0)
+        scroll=ttk.Scrollbar(samples_box,orient='vertical',command=self.samples_canvas.yview)
+        scroll.pack(side='right',fill='y');self.samples_canvas.pack(side='left',fill='x',expand=True)
+        self.samples_canvas.configure(yscrollcommand=scroll.set)
+        self.sample_rows=ttk.Frame(self.samples_canvas)
+        self.sample_window=self.samples_canvas.create_window((0,0),window=self.sample_rows,anchor='nw')
+        self.sample_rows.bind('<Configure>',lambda e:self.samples_canvas.configure(scrollregion=self.samples_canvas.bbox('all')))
+        self.samples_canvas.bind('<Configure>',lambda e:self.samples_canvas.itemconfigure(self.sample_window,width=e.width))
+        self.samples_canvas.bind('<MouseWheel>',self.scroll_samples)
+        self.sample_rows.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.columnconfigure(0,weight=1)
-        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=8,sticky='w')
+        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=5,sticky='w')
         preview=ttk.LabelFrame(frame,text='Stress-strain preview',padding=6);preview.pack(fill='both',expand=True,pady=8)
         self.preview_title=tk.StringVar(value='Import CSV files or a folder')
         ttk.Label(preview,textvariable=self.preview_title).pack(anchor='w')
@@ -63,11 +74,20 @@ class App:
             iid=self.tree.insert('', 'end',values=(Path(p).stem,self.params['Width (mm)'].get(),'',self.params['Gauge length (mm)'].get(),len(labels)))
             row=len(self.items)+1; thickness=tk.StringVar(value=''); trial=tk.StringVar(value=f'1: {labels[0]}')
             choices=[f'{i+1}: {label}' for i,label in enumerate(labels)]
+            peaks=[float(raw[:,1].max()) for _,raw in trials]
+            representative=int(np.argmin(abs(np.array(peaks)-np.mean(peaks))))
+            trial.set(choices[representative])
+            stats=[tk.StringVar(value='—') for _ in range(3)]
+            fit_lo=tk.StringVar(value='0.05');fit_hi=tk.StringVar(value='0.25')
             widgets=[ttk.Label(self.sample_rows,text=Path(p).stem),ttk.Entry(self.sample_rows,textvariable=thickness,width=14),
-                ttk.Combobox(self.sample_rows,textvariable=trial,values=choices,state='readonly',width=24),
-                ttk.Button(self.sample_rows,text='Preview',command=lambda p=p:self.select_sample(p))]
-            for col,widget in enumerate(widgets):widget.grid(row=row,column=col,padx=8,pady=5,sticky='ew')
-            self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets}
+                ttk.Combobox(self.sample_rows,textvariable=trial,values=choices,state='readonly',width=16),
+                ttk.Entry(self.sample_rows,textvariable=fit_lo,width=8),ttk.Entry(self.sample_rows,textvariable=fit_hi,width=8),
+                *[ttk.Label(self.sample_rows,textvariable=v) for v in stats]]
+            for col,widget in enumerate(widgets):
+                widget.grid(row=row,column=col,padx=5,pady=5,sticky='ew')
+                widget.bind('<MouseWheel>',self.scroll_samples)
+            self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets,'stats':stats,'cache_key':None,'results':[],'fit_lo':fit_lo,'fit_hi':fit_hi}
+            fit_lo.trace_add('write',self.schedule_preview);fit_hi.trace_add('write',self.schedule_preview)
             thickness.trace_add('write',lambda *args,p=p:self.select_sample(p))
             widgets[1].bind('<FocusIn>',lambda e,p=p:self.select_sample(p))
             widgets[2].bind('<<ComboboxSelected>>',lambda e,p=p:self.select_sample(p))
@@ -132,9 +152,11 @@ class App:
             for p,data in self.items.items():
                 dims=[float(self.params['Width (mm)'].get()),float(data['thickness'].get()),float(self.params['Gauge length (mm)'].get())]
                 if any(not math.isfinite(v) or v<=0 for v in dims):raise ValueError('Dimensions must be finite and positive')
-                configs.append((p,*dims,data['overrides'].copy()))
+                lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get())
+                if not 0<=lo<hi or not math.isfinite(hi):raise ValueError(f'Invalid fit range for {Path(p).stem}')
+                configs.append((p,*dims,data['overrides'].copy(),lo,hi))
             if not configs:raise ValueError('Select at least one CSV')
-            fit_min=float(self.params['Fit min (%)'].get());fit_max=float(self.params['Fit max (%)'].get());drop=float(self.params['Drop (%)'].get())/100
+            fit_min=.05;fit_max=.25;drop=float(self.params['Drop (%)'].get())/100
             if not 0<=fit_min<fit_max or not 0<drop<1:raise ValueError('Invalid fitting range or drop percentage')
             folder=Path(self.save.get())
             if not folder.is_dir():raise ValueError('Save folder must exist')
@@ -178,7 +200,12 @@ class App:
         if self.preview_job is not None:self.root.after_cancel(self.preview_job)
         self.preview_job=self.root.after(150,self.draw_preview)
 
-    def draw_preview(self):
+    def scroll_samples(self,event):
+        delta=int(-event.delta) if sys.platform=='darwin' else int(-event.delta/120)
+        if delta:self.samples_canvas.yview_scroll(delta,'units')
+        return 'break'
+
+    def draw_single_preview(self):
         self.preview_job=None;self.plot.delete('all')
         w=max(self.plot.winfo_width(),240);h=max(self.plot.winfo_height(),200)
         if self.active not in self.items:
@@ -215,6 +242,69 @@ class App:
                 points.extend((left+x[i]/xmax*(right-left),bottom-max(0,plot_y[i])/ymax*(bottom-top)))
         if len(points)>=4:self.plot.create_line(*points,fill='#D62728',width=1.5)
         self.preview_note.set(f'{len(x)} points | Thickness: {thickness:g} mm | Includes post-fracture tail. Run generates Excel.')
+
+    def draw_preview(self):
+        self.preview_job=None;self.plot.delete('all')
+        w=max(self.plot.winfo_width(),300);h=max(self.plot.winfo_height(),240)
+        curves=[];missing=0;failed=0
+        for p,data in self.items.items():
+            try:
+                width=float(self.params['Width (mm)'].get());length=float(self.params['Gauge length (mm)'].get());thickness=float(data['thickness'].get())
+                if any(not math.isfinite(v) or v<=0 for v in (width,length,thickness)):raise ValueError()
+                lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get());drop=float(self.params['Drop (%)'].get())/100
+                if not 0<=lo<hi or not math.isfinite(hi):raise ValueError()
+                key=(width,length,thickness,lo,hi,drop,tuple(sorted(data['overrides'].items())))
+                if key!=data['cache_key']:
+                    results=[]
+                    for label,raw in data['trials']:
+                        try:result=core.analyze_trial(raw,width,thickness,length,lo,hi,drop,data['overrides'].get(label))
+                        except ValueError:result=None
+                        results.append(result)
+                    data['results']=results;data['cache_key']=key
+                results=data['results']
+                strengths=[float(raw[:,1].max())/(width*thickness) for _,raw in data['trials']]
+                for var,values in zip(data['stats'],[strengths,[r['modulus'] for r in results if r is not None],[r['break_strain'] for r in results if r is not None and r['break_strain'] is not None]]):
+                    var.set(f'{np.mean(values):.4g}' if values else '—')
+                failed+=sum(r is None for r in results)
+                missing+=sum(r is not None and r['break_strain'] is None for r in results)
+                index=data['choices'].index(data['trial'].get());label,raw=data['trials'][index]
+                x=raw[:,2]/length*100;y=raw[:,1]/(width*thickness)
+                if self.smooth.get() and results[index] is not None:y,_=core.plot_values(results[index],True)
+                curves.append((Path(p).stem,x,y,lo,hi))
+            except ValueError:
+                for var in data['stats']:var.set('—')
+        self.preview_title.set(f'Stress-strain curves: {len(curves)} samples')
+        if not curves:
+            self.plot.create_text(w/2,h/2,text='Import files and enter each sample thickness to show all curves',font=('Arial',13))
+            self.preview_note.set('Width and gauge length apply to all samples. Trial lists switch individual curves.');return
+        xmax=max(max(float(x.max()) for _,x,_,_,_ in curves),1e-12)
+        ymax=max(max(float(y.max()) for _,_,y,_,_ in curves)*1.05,1e-12)
+        left,right,top,bottom=85,w-220,25,h-60
+        right=max(right,left+80)
+        self.plot.create_rectangle(left,top,right,bottom,outline='black',width=1)
+        for i in range(5):
+            xx=left+(right-left)*i/4;yy=bottom-(bottom-top)*i/4
+            self.plot.create_line(xx,bottom,xx,bottom-5);self.plot.create_line(left,yy,left+5,yy)
+            self.plot.create_text(xx,bottom+16,text=f'{xmax*i/4:.3g}',font=('Arial',11))
+            self.plot.create_text(left-8,yy,text=f'{ymax*i/4:.3g}',anchor='e',font=('Arial',11))
+        self.plot.create_text((left+right)/2,h-16,text='Strain (%)',font=('Arial',12))
+        self.plot.create_text(20,(top+bottom)/2,text='Stress (MPa)',angle=90,font=('Arial',12))
+        colors=['#D62728','#1F77B4','#2CA02C','#9467BD','#FF7F0E','#17BECF','#8C564B']
+        for n,(name,x,y,lo,hi) in enumerate(curves):
+            color=colors[n%len(colors)];points=[];bucket=max(1,len(x)//1000)
+            for start in range(0,len(x),bucket):
+                stop=min(len(x),start+bucket);part=y[start:stop]
+                for i in sorted(set([start,stop-1,start+int(np.argmin(part)),start+int(np.argmax(part))])):
+                    points.extend((left+x[i]/xmax*(right-left),bottom-max(0,y[i])/ymax*(bottom-top)))
+            if len(points)>=4:self.plot.create_line(*points,fill=color,width=1.5,tags='sample_curve')
+            fit_points=[]
+            for i in np.flatnonzero((x>=lo)&(x<=hi)):
+                fit_points.extend((left+x[i]/xmax*(right-left),bottom-max(0,y[i])/ymax*(bottom-top)))
+            if len(fit_points)>=4:self.plot.create_line(*fit_points,fill=color,width=4,tags='fit_range')
+            yy=top+20+n*24
+            self.plot.create_line(right+15,yy,right+40,yy,fill=color,width=2)
+            self.plot.create_text(right+45,yy,text=name,anchor='w',font=('Arial',10),width=155)
+        self.preview_note.set(f'Bold segments: modulus fitting ranges. Break mean excludes undetected fractures ({missing}). Failed fits: {failed}. Run generates Excel.')
 
 if __name__=='__main__':
     root=tk.Tk();App(root);root.mainloop()

@@ -48,6 +48,8 @@ def analyze_trial(raw,width,thickness,length,fit_min=.05,fit_max=.25,drop=.5,ove
     peak=float(stress.max())
     break_idx=None
     if override is not None:
+        if not np.isfinite(override) or override<strain.min()*100 or override>strain.max()*100:
+            raise ValueError('Manual fracture strain must be within the measured strain range')
         break_idx=int(np.argmin(abs(strain*100-override)))
         status='manual'
     else:
@@ -137,7 +139,6 @@ def export_excel(samples,path,smooth=False):
             for i in range(len(r['stress'])):
                 strain=r['strain'][i]*100
                 fit=r['modulus']*1000*r['strain'][i]+r['intercept'] if r['fit_min']<=strain<=r['fit_max'] else None
-                ws.append([]) if False else None
                 vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None]
                 for j,v in enumerate(vals,16): ws.cell(i+5,j,float(v) if isinstance(v,np.generic) else v)
             chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')

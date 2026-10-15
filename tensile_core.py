@@ -10,6 +10,8 @@ from openpyxl.chart.data_source import NumDataSource, NumRef
 from openpyxl.styles import Font, PatternFill
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.text import RichText
+from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.legend import LegendEntry
 from openpyxl.drawing.text import CharacterProperties, Font as DFont, Paragraph, ParagraphProperties, RegularTextRun
 
 def read_trials(path):
@@ -88,6 +90,7 @@ def text_style():
 def format_chart(chart,x_title,y_title):
     chart.width=12.7; chart.height=12.7; chart.title=None
     chart.x_axis.title=x_title; chart.y_axis.title=y_title
+    chart.layout=Layout(manualLayout=ManualLayout(layoutTarget='inner',xMode='edge',yMode='edge',wMode='factor',hMode='factor',x=.16,y=.04,w=.80,h=.80))
     chart.graphical_properties=GraphicalProperties(solidFill='FFFFFF')
     chart.graphical_properties.ln.noFill=True
     chart.plot_area.spPr=GraphicalProperties(solidFill='FFFFFF')
@@ -95,14 +98,28 @@ def format_chart(chart,x_title,y_title):
     for axis in (chart.x_axis,chart.y_axis):
         axis.txPr=text_style(); axis.majorGridlines=None; axis.minorGridlines=None
         axis.spPr=GraphicalProperties(); axis.spPr.ln.solidFill='000000'; axis.spPr.ln.w=12700
-        axis.scaling.min=0; axis.majorTickMark='in'; axis.crosses='min'
+        axis.scaling.min=0; axis.majorTickMark='in'; axis.minorTickMark='none'; axis.crosses='min'
+        axis.delete=False;axis.tickLblPos='nextTo';axis.numFmt='0.##'
+        axis.crossesAt=None
         if axis.title:
             axis.title.txPr=text_style()
             for p in axis.title.tx.rich.p:
                 p.pPr=ParagraphProperties(defRPr=CharacterProperties(latin=DFont(typeface='Arial'),sz=1400,b=False))
                 for run in p.r:
                     run.rPr=CharacterProperties(latin=DFont(typeface='Arial'),sz=1400,b=False)
-    if chart.legend: chart.legend.txPr=text_style(); chart.legend.position='b'
+    chart.x_axis.axPos='b';chart.y_axis.axPos='l'
+    if chart.legend: chart.legend.txPr=text_style(); chart.legend.position='b';chart.legend.overlay=False
+
+def included_trials(trials):
+    return [(label,r) for label,r in trials if r.get('included',True)]
+
+def sample_statistics(trials):
+    eligible=included_trials(trials)
+    stats={}
+    for key in ('strength','modulus','break_strain','toughness'):
+        nums=[r[key] for _,r in eligible if r[key] is not None]
+        stats[key]=(float(np.mean(nums)) if nums else None,float(np.std(nums,ddof=1)) if len(nums)>1 else None)
+    return stats
 
 def plot_values(result,smooth):
     y=result['stress'].copy()
@@ -114,23 +131,22 @@ def plot_values(result,smooth):
 def export_excel(samples,path,smooth=False):
     wb=Workbook(); bars=wb.active; bars.title='Properties'
     overview=wb.create_sheet('Stress_Strain'); summary=wb.create_sheet('Summary')
-    headers=['Sample','Trial','Break status','Strength (MPa)','Modulus (GPa)','Break strain (%)','Toughness (MJ/m3)','Fit R2','Width (mm)','Thickness (mm)','Gauge length (mm)','Fit min (%)','Fit max (%)']
+    headers=['Sample','Trial','Break status','Strength (MPa)','Modulus (GPa)','Break strain (%)','Toughness (MJ/m3)','Fit R2','Width (mm)','Thickness (mm)','Gauge length (mm)','Fit min (%)','Fit max (%)','Included in mean']
     summary.append(headers)
     barheaders=['Sample','Strength mean (MPa)','Strength SD (MPa)','Modulus mean (GPa)','Modulus SD (GPa)','Representative trial']
     for j,h in enumerate(barheaders,16): bars.cell(1,j,h)
     metrics=['strength','modulus','break_strain','toughness']
     representatives=[]
     for sample_idx,(name,trials) in enumerate(samples.items(),2):
-        strength_mean=np.mean([r['strength'] for _,r in trials])
-        rep=min(trials,key=lambda pair:abs(pair[1]['strength']-strength_mean))
-        representatives.append((name,*rep))
-        stats={}
-        for key in metrics:
-            nums=[r[key] for _,r in trials if r[key] is not None]
-            stats[key]=(float(np.mean(nums)) if nums else None,float(np.std(nums,ddof=1)) if len(nums)>1 else None)
-        for j,v in enumerate([name,stats['strength'][0],stats['strength'][1],stats['modulus'][0],stats['modulus'][1],rep[0]],16): bars.cell(sample_idx,j,v)
+        eligible=included_trials(trials);stats=sample_statistics(trials)
+        rep=None
+        if eligible:
+            selected=[pair for pair in eligible if pair[1].get('representative',False)]
+            rep=selected[0] if selected else min(eligible,key=lambda pair:abs(pair[1]['strength']-stats['strength'][0]))
+            representatives.append((name,*rep))
+        for j,v in enumerate([name,stats['strength'][0],stats['strength'][1],stats['modulus'][0],stats['modulus'][1],rep[0] if rep else None],16): bars.cell(sample_idx,j,v)
         for label,r in trials:
-            summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max']])
+            summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max'],'Yes' if r.get('included',True) else 'No'])
             ws=wb.create_sheet(f'Trial_{len(wb.worksheets)-3:03d}')
             ws.cell(1,16,name); ws.cell(2,16,label)
             cols=['Time (s)','Force (N)','Stroke (mm)','Strain (%)','Stress (MPa)','Plot stress (MPa)','Modulus fit (MPa)','Fracture marker']
@@ -158,22 +174,28 @@ def export_excel(samples,path,smooth=False):
     overview.add_chart(chart,'A1')
     main=BarChart(); second=BarChart(); main.grouping='clustered'; second.grouping='clustered'
     count=len(samples)+1
-    # Blank alternating categories create paired bars with two independent axes.
-    for j,v in enumerate(['Sample','Strength (MPa)','Modulus (GPa)','Strength SD','Modulus SD'],23): bars.cell(1,j,v)
+    # Matching empty companion series keep the two value-axis bar groups aligned.
+    for j,v in enumerate(['Sample','Strength (MPa)','Spacer 1','Spacer 2','Modulus (GPa)','Strength SD','Modulus SD'],23): bars.cell(1,j,v)
     for i in range(2,count+1):
-        row=2+(i-2)*2
-        for j,v in enumerate([bars.cell(i,16).value,bars.cell(i,17).value,None,bars.cell(i,18).value,None],23): bars.cell(row,j,v)
-        for j,v in enumerate([bars.cell(i,16).value,None,bars.cell(i,19).value,None,bars.cell(i,20).value],23): bars.cell(row+1,j,v)
-    last=1+2*len(samples)
-    main.add_data(Reference(bars,min_col=24,min_row=1,max_row=last),titles_from_data=True)
-    second.add_data(Reference(bars,min_col=25,min_row=1,max_row=last),titles_from_data=True)
-    for c,errcol,color in [(main,'Z','4472C4'),(second,'AA','ED7D31')]:
-        c.set_categories(Reference(bars,min_col=23,min_row=2,max_row=last)); c.gapWidth=40
-        c.series[0].graphicalProperties.solidFill=color
+        values=[bars.cell(i,16).value,bars.cell(i,17).value,None,None,bars.cell(i,19).value,bars.cell(i,18).value,bars.cell(i,20).value]
+        for j,v in enumerate(values,23): bars.cell(i,j,v)
+    last=count
+    main.add_data(Reference(bars,min_col=24,max_col=25,min_row=1,max_row=last),titles_from_data=True)
+    second.add_data(Reference(bars,min_col=26,max_col=27,min_row=1,max_row=last),titles_from_data=True)
+    for c,series_index,errcol,color in [(main,0,'AB','4472C4'),(second,1,'AC','ED7D31')]:
+        c.set_categories(Reference(bars,min_col=23,min_row=2,max_row=last)); c.gapWidth=80;c.overlap=0
+        c.series[series_index].graphicalProperties.solidFill=color
+        c.series[series_index].graphicalProperties.line.solidFill=color
+        c.series[1-series_index].graphicalProperties.noFill=True
+        c.series[1-series_index].graphicalProperties.line.noFill=True
         ref=f"'Properties'!${errcol}$2:${errcol}${last}"
-        c.series[0].errBars=ErrorBars(errDir='y',errBarType='both',errValType='cust',plus=NumDataSource(numRef=NumRef(f=ref)),minus=NumDataSource(numRef=NumRef(f=ref)))
+        c.series[series_index].errBars=ErrorBars(errDir='y',errBarType='both',errValType='cust',plus=NumDataSource(numRef=NumRef(f=ref)),minus=NumDataSource(numRef=NumRef(f=ref)))
     format_chart(main,'Sample','Tensile strength (MPa)'); format_chart(second,'Sample',"Young's modulus (GPa)")
-    second.y_axis.axId=200; second.y_axis.axPos='r'; second.y_axis.crosses='max'
+    second.y_axis.axId=200; second.y_axis.axPos='r'; second.y_axis.crosses='max';second.y_axis.crossAx=10
+    main.y_axis.crossAx=10;main.x_axis.crossAx=100;main.x_axis.tickLblPos='low'
+    # Reserve both margins for the two explicit value axes in the square figure.
+    main.layout=Layout(manualLayout=ManualLayout(layoutTarget='inner',xMode='edge',yMode='edge',wMode='factor',hMode='factor',x=.10,y=.04,w=.80,h=.80))
+    main.legend.legendEntry=[LegendEntry(idx=1,delete=True),LegendEntry(idx=2,delete=True)]
     main+=second; bars.add_chart(main,'A1')
     for ws in wb:
         ws.freeze_panes='A2' if ws==summary else 'P5'
@@ -193,12 +215,17 @@ def process_files(configs,path,fit_min=.05,fit_max=.25,drop=.5,smooth=False,emit
     for config in configs:
         file,width,thickness,length,overrides=config[:5]
         sample_fit_min,sample_fit_max=config[5:7] if len(config)>=7 else (fit_min,fit_max)
+        trial_settings=config[7] if len(config)>7 else {}
+        representative=config[8] if len(config)>8 else None
         name=Path(file).stem
         if name in samples: raise ValueError(f'Duplicate sample name: {name}')
         trials=[]
         for label,raw in read_trials(file):
             emit(f'{name}: {label}')
-            result=analyze_trial(raw,width,thickness,length,sample_fit_min,sample_fit_max,drop,overrides.get(label))
+            options=trial_settings.get(label,{})
+            result=analyze_trial(raw,width,options.get('thickness',thickness),length,options.get('fit_min',sample_fit_min),options.get('fit_max',sample_fit_max),drop,overrides.get(label))
+            result['included']=options.get('included',True)
+            result['representative']=label==representative
             trials.append((label,result))
         samples[name]=trials
     export_excel(samples,path,smooth)

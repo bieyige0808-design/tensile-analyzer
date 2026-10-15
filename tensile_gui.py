@@ -8,16 +8,19 @@ import threading,queue,sys,os,subprocess
 import tensile_core as core
 import math
 import numpy as np
+from tensile_details import TrialDetails
 
 class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None
-        root.title('Tensile Analyzer 1.3'); root.geometry('1280x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.4'); root.geometry('1280x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
         for text,command in [('Select files',self.files),('Select folder',self.folder),('Remove selected',self.remove)]: ttk.Button(top,text=text,command=command).pack(side='left',padx=3)
+        self.run_button=ttk.Button(top,text='RUN / Export Excel',command=self.start);self.run_button.pack(side='right',padx=10)
+        self.status=tk.StringVar(value='Ready');ttk.Label(top,textvariable=self.status).pack(side='right')
         self.params={}
         settings=ttk.LabelFrame(frame,text='Defaults and analysis settings',padding=8); settings.pack(fill='x',pady=8)
         fields=[('Width (mm)','4'),('Gauge length (mm)','20'),('Drop (%)','50')]
@@ -44,7 +47,7 @@ class App:
         self.samples_canvas.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.columnconfigure(0,weight=1)
-        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=5,sticky='w')
+        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Experiments']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=4,sticky='w')
         preview=ttk.LabelFrame(frame,text='Stress-strain preview',padding=6);preview.pack(fill='both',expand=True,pady=8)
         self.preview_title=tk.StringVar(value='Import CSV files or a folder')
         ttk.Label(preview,textvariable=self.preview_title).pack(anchor='w')
@@ -57,9 +60,7 @@ class App:
         ttk.Label(out,text='Save folder').pack(side='left'); ttk.Entry(out,textvariable=self.save).pack(side='left',fill='x',expand=True,padx=8)
         ttk.Button(out,text='Browse',command=self.save_folder).pack(side='left')
         controls=ttk.Frame(frame); controls.pack(fill='x')
-        self.run_button=ttk.Button(controls,text='Run analysis',command=self.start); self.run_button.pack(side='left')
         ttk.Button(controls,text='Set manual fracture points',command=self.manual).pack(side='left',padx=8)
-        self.status=tk.StringVar(value='Ready'); ttk.Label(controls,textvariable=self.status).pack(side='left')
         self.log=ScrolledText(frame,height=4,state='disabled'); self.log.pack(fill='x',pady=8)
         ttk.Label(frame,text='Engineering stress = force / area. Strain uses instrument stroke / gauge length. No zero/preload correction.\nFracture: >= selected drop within 0.1 s, confirmed by 3-5 subsequent points. Missing fracture results remain blank.').pack(anchor='w')
         root.after(100,self.poll)
@@ -82,11 +83,15 @@ class App:
             widgets=[ttk.Label(self.sample_rows,text=Path(p).stem),ttk.Entry(self.sample_rows,textvariable=thickness,width=14),
                 ttk.Combobox(self.sample_rows,textvariable=trial,values=choices,state='readonly',width=16),
                 ttk.Entry(self.sample_rows,textvariable=fit_lo,width=8),ttk.Entry(self.sample_rows,textvariable=fit_hi,width=8),
-                *[ttk.Label(self.sample_rows,textvariable=v) for v in stats]]
+                *[ttk.Label(self.sample_rows,textvariable=v) for v in stats],
+                ttk.Button(self.sample_rows,text='Details',command=lambda p=p:self.details(p))]
             for col,widget in enumerate(widgets):
                 widget.grid(row=row,column=col,padx=5,pady=5,sticky='ew')
                 widget.bind('<MouseWheel>',self.scroll_samples)
-            self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets,'stats':stats,'cache_key':None,'results':[],'fit_lo':fit_lo,'fit_hi':fit_hi}
+            options={label:dict(thickness=tk.StringVar(value=''),fit_lo=tk.StringVar(value=''),fit_hi=tk.StringVar(value=''),included=tk.BooleanVar(value=True)) for label in labels}
+            self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets,'stats':stats,'cache_key':None,'results':[],'fit_lo':fit_lo,'fit_hi':fit_hi,'options':options,'detail':None,'errors':[]}
+            for opts in options.values():
+                for var in opts.values():var.trace_add('write',self.schedule_preview)
             fit_lo.trace_add('write',self.schedule_preview);fit_hi.trace_add('write',self.schedule_preview)
             thickness.trace_add('write',lambda *args,p=p:self.select_sample(p))
             widgets[1].bind('<FocusIn>',lambda e,p=p:self.select_sample(p))
@@ -143,7 +148,7 @@ class App:
                 values={k:float(v.get()) for k,v in variables.items() if v.get().strip()}
                 if any(not (0<=v<float('inf')) for v in values.values()):raise ValueError()
             except ValueError:messagebox.showerror('Invalid strain','Enter finite nonnegative values');return
-            data['overrides']=values;win.destroy()
+            data['overrides']=values;win.destroy();self.schedule_preview()
         ttk.Button(win,text='Save',command=save).grid(row=len(variables)+1,column=1,pady=10)
     def start(self):
         if self.running:return
@@ -154,7 +159,9 @@ class App:
                 if any(not math.isfinite(v) or v<=0 for v in dims):raise ValueError('Dimensions must be finite and positive')
                 lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get())
                 if not 0<=lo<hi or not math.isfinite(hi):raise ValueError(f'Invalid fit range for {Path(p).stem}')
-                configs.append((p,*dims,data['overrides'].copy(),lo,hi))
+                options=self.trial_options(data)
+                index=data['choices'].index(data['trial'].get())
+                configs.append((p,*dims,data['overrides'].copy(),lo,hi,options,data['labels'][index]))
             if not configs:raise ValueError('Select at least one CSV')
             fit_min=.05;fit_max=.25;drop=float(self.params['Drop (%)'].get())/100
             if not 0<=fit_min<fit_max or not 0<drop<1:raise ValueError('Invalid fitting range or drop percentage')
@@ -205,6 +212,44 @@ class App:
         if delta:self.samples_canvas.yview_scroll(delta,'units')
         return 'break'
 
+    def details(self,p):
+        self.select_sample(p);data=self.items[p]
+        if data['detail'] is not None and data['detail'].window.winfo_exists():data['detail'].window.lift();return
+        data['detail']=TrialDetails(self,p)
+
+    def trial_options(self,data):
+        result={}
+        for label,options in data['options'].items():
+            row={'included':options['included'].get()}
+            for field,source in [('thickness','thickness'),('fit_min','fit_lo'),('fit_max','fit_hi')]:
+                text=options[source].get().strip()
+                value=float(text) if text else float(data[source].get())
+                if not math.isfinite(value):raise ValueError(f'Invalid value for trial {label}')
+                row[field]=value
+            if row['thickness']<=0 or not 0<=row['fit_min']<row['fit_max']:raise ValueError(f'Check thickness and fit range for trial {label}')
+            result[label]=row
+        return result
+
+    def evaluate_sample(self,data):
+        width=float(self.params['Width (mm)'].get());length=float(self.params['Gauge length (mm)'].get())
+        drop=float(self.params['Drop (%)'].get())/100
+        if any(not math.isfinite(v) or v<=0 for v in (width,length)):raise ValueError('Check common dimensions')
+        options=self.trial_options(data)
+        key=(width,length,drop,tuple((label,tuple(sorted(row.items()))) for label,row in options.items()),tuple(sorted(data['overrides'].items())))
+        if key!=data['cache_key']:
+            results=[];errors=[]
+            for label,raw in data['trials']:
+                settings=options[label]
+                try:
+                    r=core.analyze_trial(raw,width,settings['thickness'],length,settings['fit_min'],settings['fit_max'],drop,data['overrides'].get(label))
+                    r['included']=settings['included'];results.append(r);errors.append('')
+                except ValueError as e:results.append(None);errors.append(str(e))
+            data['results']=results;data['errors']=errors;data['cache_key']=key
+            eligible=[(i,r) for i,r in enumerate(results) if r is not None and r['included']]
+            if eligible:
+                mean=float(np.mean([r['strength'] for _,r in eligible]));i,_=min(eligible,key=lambda item:abs(item[1]['strength']-mean));data['trial'].set(data['choices'][i])
+        return options
+
     def draw_single_preview(self):
         self.preview_job=None;self.plot.delete('all')
         w=max(self.plot.winfo_width(),240);h=max(self.plot.winfo_height(),200)
@@ -249,30 +294,23 @@ class App:
         curves=[];missing=0;failed=0
         for p,data in self.items.items():
             try:
-                width=float(self.params['Width (mm)'].get());length=float(self.params['Gauge length (mm)'].get());thickness=float(data['thickness'].get())
-                if any(not math.isfinite(v) or v<=0 for v in (width,length,thickness)):raise ValueError()
-                lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get());drop=float(self.params['Drop (%)'].get())/100
-                if not 0<=lo<hi or not math.isfinite(hi):raise ValueError()
-                key=(width,length,thickness,lo,hi,drop,tuple(sorted(data['overrides'].items())))
-                if key!=data['cache_key']:
-                    results=[]
-                    for label,raw in data['trials']:
-                        try:result=core.analyze_trial(raw,width,thickness,length,lo,hi,drop,data['overrides'].get(label))
-                        except ValueError:result=None
-                        results.append(result)
-                    data['results']=results;data['cache_key']=key
+                options=self.evaluate_sample(data)
+                width=float(self.params['Width (mm)'].get());length=float(self.params['Gauge length (mm)'].get())
                 results=data['results']
-                strengths=[float(raw[:,1].max())/(width*thickness) for _,raw in data['trials']]
-                for var,values in zip(data['stats'],[strengths,[r['modulus'] for r in results if r is not None],[r['break_strain'] for r in results if r is not None and r['break_strain'] is not None]]):
-                    var.set(f'{np.mean(values):.4g}' if values else '—')
+                stats=core.sample_statistics([(label,r) for label,r in zip(data['labels'],results) if r is not None])
+                for var,metric in zip(data['stats'],('strength','modulus','break_strain')):
+                    value=stats[metric][0];var.set(f'{value:.4g}' if value is not None else '—')
                 failed+=sum(r is None for r in results)
                 missing+=sum(r is not None and r['break_strain'] is None for r in results)
                 index=data['choices'].index(data['trial'].get());label,raw=data['trials'][index]
+                selected=options[label];thickness=selected['thickness'];lo=selected['fit_min'];hi=selected['fit_max']
                 x=raw[:,2]/length*100;y=raw[:,1]/(width*thickness)
                 if self.smooth.get() and results[index] is not None:y,_=core.plot_values(results[index],True)
                 curves.append((Path(p).stem,x,y,lo,hi))
             except ValueError:
                 for var in data['stats']:var.set('—')
+            detail=data.get('detail')
+            if detail is not None and detail.window.winfo_exists():detail.refresh()
         self.preview_title.set(f'Stress-strain curves: {len(curves)} samples')
         if not curves:
             self.plot.create_text(w/2,h/2,text='Import files and enter each sample thickness to show all curves',font=('Arial',13))

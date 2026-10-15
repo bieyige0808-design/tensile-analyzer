@@ -176,23 +176,33 @@ def export_excel(samples,path,smooth=False):
             rep=selected[0] if selected else min(eligible,key=lambda pair:abs(pair[1]['strength']-stats['strength'][0]))
             if rep[1].get('show_ss',True):representatives.append((name,*rep))
         for j,v in enumerate([name,stats['strength'][0],stats['strength'][1],stats['modulus'][0],stats['modulus'][1],rep[0] if rep else None],16): bars.cell(sample_idx,j,v)
-        for label,r in trials:
+        # One editable chart per sample, with every trial retained in source blocks.
+        sheet_name=''.join('_' if c in '[]:*?/\\' else c for c in name).strip("'")[:31] or 'Sample'
+        base=sheet_name; suffix=1
+        while sheet_name.lower() in {s.lower() for s in wb.sheetnames}:
+            tail=f'_{suffix}';sheet_name=base[:31-len(tail)]+tail;suffix+=1
+        ws=wb.create_sheet(sheet_name)
+        chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')
+        chart.legend.position='t';chart.legend.overlay=False
+        chart.layout.manualLayout.y=.10
+        for trial_index,(label,r) in enumerate(trials):
             summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max'],'Yes' if r.get('included',True) else 'No',r.get('plot_shift',0),r.get('plot_origin',0)])
-            ws=wb.create_sheet(f'Trial_{len(wb.worksheets)-3:03d}')
-            ws.cell(1,16,name); ws.cell(2,16,label)
+            start_col=16+trial_index*10
+            ws.cell(1,start_col,name); ws.cell(2,start_col,label)
             cols=['Time (s)','Force (N)','Stroke (mm)','Strain (%)','Stress (MPa)','Plot stress (MPa)','Modulus fit (MPa)','Fracture marker','Plot strain (%)']
-            for j,v in enumerate(cols,16): ws.cell(4,j,v)
+            for j,v in enumerate(cols,start_col): ws.cell(4,j,v)
             plot,end=plot_values(r,smooth)
             for i in range(len(r['stress'])):
                 strain=r['strain'][i]*100
                 fit=r['modulus']*1000*r['strain'][i]+r['intercept'] if r['fit_min']<=strain<=r['fit_max'] else None
                 vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None,strain+r.get('plot_shift',0)]
-                for j,v in enumerate(vals,16): ws.cell(i+5,j,float(v) if isinstance(v,np.generic) else v)
-            chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')
-            for ycol,title,count in [(21,'Stress',end),(22,'Modulus fit',len(r['stress']))]:
-                series=Series(Reference(ws,min_col=ycol,min_row=5,max_row=4+count),Reference(ws,min_col=24,min_row=5,max_row=4+count),title=title)
-                series.graphicalProperties.line.width=12700; chart.series.append(series)
-            ws.add_chart(chart,'A1')
+                for j,v in enumerate(vals,start_col):
+                    if v is not None: ws.cell(i+5,j,float(v) if isinstance(v,np.generic) else v)
+            series=Series(Reference(ws,min_col=start_col+5,min_row=5,max_row=4+end),Reference(ws,min_col=start_col+8,min_row=5,max_row=4+end),title=label)
+            series.graphicalProperties.line.width=12700
+            if not r.get('included',True): series.graphicalProperties.line.prstDash='dash'
+            chart.series.append(series)
+        ws.add_chart(chart,'A1')
         summary.append([name,'Mean','',*[stats[k][0] for k in metrics]])
         summary.append([name,'SD (sample)','',*[stats[k][1] for k in metrics]])
     chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')
@@ -230,14 +240,17 @@ def export_excel(samples,path,smooth=False):
     main.layout=Layout(manualLayout=ManualLayout(layoutTarget='inner',xMode='edge',yMode='edge',wMode='factor',hMode='factor',x=.10,y=.04,w=.80,h=.80))
     main.legend.legendEntry=[LegendEntry(idx=1,delete=True),LegendEntry(idx=2,delete=True)]
     main+=second;main.legend=None;bars.add_chart(main,'A1')
+    body_font=Font(name='Arial',size=14)
+    header_fill=PatternFill('solid',fgColor='DEEAF6')
     for ws in wb:
         ws.freeze_panes=None
-        for row in ws:
-            for cell in row:
-                cell.font=Font(name='Arial',size=14)
-                if isinstance(cell.value,(int,float)): cell.number_format='0.0000'
-        for cell in ws[1]:
-            if cell.value is not None: cell.fill=PatternFill('solid',fgColor='DEEAF6')
+        # Style populated cells only: rectangular iteration creates many empty cells
+        # beside long source columns, and repeatedly constructing fonts is costly.
+        for cell in ws._cells.values():
+            if cell.value is None: continue
+            cell.font=body_font
+            if isinstance(cell.value,(int,float)): cell.number_format='0.0000'
+            if cell.row==1: cell.fill=header_fill
         for col in range(1,ws.max_column+1):
             from openpyxl.utils import get_column_letter
             ws.column_dimensions[get_column_letter(col)].width=24 if col>=16 or ws==summary else 8

@@ -27,4 +27,8 @@ with tempfile.TemporaryDirectory() as folder:
     assert wb.sheetnames[:3]==['Properties','Stress_Strain','Summary']
     assert len(wb['Properties']._charts)==1 and len(wb['Stress_Strain']._charts)==1
     assert len(wb['Summary']['A'])==11
+    assert len(wb.sheetnames)==3+len(a)
+    for name,trials in a.items():
+        assert len(wb[name]._charts)==1
+        assert len(wb[name]._charts[0].series)==len(trials)
 print('All numerical and workbook checks passed')

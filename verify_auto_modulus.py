@@ -28,6 +28,6 @@ assert abs(float(data['fit_lo'].get())-data['results'][index]['fit_min'])<1e-7
 with tempfile.TemporaryDirectory() as folder:
     out=Path(folder)/'auto.xlsx';configs,_=app.export_configs();results=core.process_files(configs,out,emit=lambda _:None)
     wb=load_workbook(out);res=results[p.stem][0][1]
-    assert abs(wb['Trial_000']['X5'].value-(wb['Trial_000']['S5'].value+res['plot_shift']))<1e-9
+    assert abs(wb[p.stem]['X5'].value-(wb[p.stem]['S5'].value+res['plot_shift']))<1e-9
     assert abs(wb['Summary']['P2'].value-res['plot_origin'])<1e-9
 root.destroy();print('Maximum modulus, zero-stress intercept and actual plot-shift autofill verified')

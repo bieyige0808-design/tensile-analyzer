@@ -49,6 +49,6 @@ with tempfile.TemporaryDirectory() as d:
     assert all(ws.freeze_panes is None for ws in wb)
     assert chart.series[0].errBars.noEndCap is False
     assert len(wb['Stress_Strain']._charts[0].series)==0
-    assert abs(wb['Trial_001']['X5'].value-wb['Trial_001']['S5'].value-.5)<1e-9
+    assert abs(wb[p.stem].cell(5,34).value-wb[p.stem].cell(5,29).value-.5)<1e-9
 root.destroy()
 print('Trial overrides, exclusion, persistence, export and chart layout verified')

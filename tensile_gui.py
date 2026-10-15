@@ -15,7 +15,7 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None;self.syncing_shift=False
-        root.title('Tensile Analyzer 1.10'); root.geometry('1400x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.11'); root.geometry('1400x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')

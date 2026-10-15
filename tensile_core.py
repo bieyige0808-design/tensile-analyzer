@@ -99,7 +99,7 @@ def format_chart(chart,x_title,y_title):
         axis.txPr=text_style(); axis.majorGridlines=None; axis.minorGridlines=None
         axis.spPr=GraphicalProperties(); axis.spPr.ln.solidFill='000000'; axis.spPr.ln.w=12700
         axis.scaling.min=0; axis.majorTickMark='in'; axis.minorTickMark='none'; axis.crosses='min'
-        axis.delete=False;axis.tickLblPos='nextTo';axis.numFmt='0.##'
+        axis.delete=False;axis.tickLblPos='nextTo';axis.numFmt='General'
         axis.crossesAt=None
         if axis.title:
             axis.title.txPr=text_style()
@@ -131,7 +131,7 @@ def plot_values(result,smooth):
 def export_excel(samples,path,smooth=False):
     wb=Workbook(); bars=wb.active; bars.title='Properties'
     overview=wb.create_sheet('Stress_Strain'); summary=wb.create_sheet('Summary')
-    headers=['Sample','Trial','Break status','Strength (MPa)','Modulus (GPa)','Break strain (%)','Toughness (MJ/m3)','Fit R2','Width (mm)','Thickness (mm)','Gauge length (mm)','Fit min (%)','Fit max (%)','Included in mean']
+    headers=['Sample','Trial','Break status','Strength (MPa)','Modulus (GPa)','Break strain (%)','Toughness (MJ/m3)','Fit R2','Width (mm)','Thickness (mm)','Gauge length (mm)','Fit min (%)','Fit max (%)','Included in mean','Plot shift (%)']
     summary.append(headers)
     barheaders=['Sample','Strength mean (MPa)','Strength SD (MPa)','Modulus mean (GPa)','Modulus SD (GPa)','Representative trial']
     for j,h in enumerate(barheaders,16): bars.cell(1,j,h)
@@ -143,23 +143,23 @@ def export_excel(samples,path,smooth=False):
         if eligible:
             selected=[pair for pair in eligible if pair[1].get('representative',False)]
             rep=selected[0] if selected else min(eligible,key=lambda pair:abs(pair[1]['strength']-stats['strength'][0]))
-            representatives.append((name,*rep))
+            if rep[1].get('show_ss',True):representatives.append((name,*rep))
         for j,v in enumerate([name,stats['strength'][0],stats['strength'][1],stats['modulus'][0],stats['modulus'][1],rep[0] if rep else None],16): bars.cell(sample_idx,j,v)
         for label,r in trials:
-            summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max'],'Yes' if r.get('included',True) else 'No'])
+            summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max'],'Yes' if r.get('included',True) else 'No',r.get('plot_shift',0)])
             ws=wb.create_sheet(f'Trial_{len(wb.worksheets)-3:03d}')
             ws.cell(1,16,name); ws.cell(2,16,label)
-            cols=['Time (s)','Force (N)','Stroke (mm)','Strain (%)','Stress (MPa)','Plot stress (MPa)','Modulus fit (MPa)','Fracture marker']
+            cols=['Time (s)','Force (N)','Stroke (mm)','Strain (%)','Stress (MPa)','Plot stress (MPa)','Modulus fit (MPa)','Fracture marker','Plot strain (%)']
             for j,v in enumerate(cols,16): ws.cell(4,j,v)
             plot,end=plot_values(r,smooth)
             for i in range(len(r['stress'])):
                 strain=r['strain'][i]*100
                 fit=r['modulus']*1000*r['strain'][i]+r['intercept'] if r['fit_min']<=strain<=r['fit_max'] else None
-                vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None]
+                vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None,strain+r.get('plot_shift',0)]
                 for j,v in enumerate(vals,16): ws.cell(i+5,j,float(v) if isinstance(v,np.generic) else v)
             chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')
             for ycol,title,count in [(21,'Stress',end),(22,'Modulus fit',len(r['stress']))]:
-                series=Series(Reference(ws,min_col=ycol,min_row=5,max_row=4+count),Reference(ws,min_col=19,min_row=5,max_row=4+count),title=title)
+                series=Series(Reference(ws,min_col=ycol,min_row=5,max_row=4+count),Reference(ws,min_col=24,min_row=5,max_row=4+count),title=title)
                 series.graphicalProperties.line.width=12700; chart.series.append(series)
             ws.add_chart(chart,'A1')
         summary.append([name,'Mean','',*[stats[k][0] for k in metrics]])
@@ -168,7 +168,7 @@ def export_excel(samples,path,smooth=False):
     for n,(name,label,r) in enumerate(representatives):
         col=16+n*2; overview.cell(1,col,name); overview.cell(2,col,'Strain (%)'); overview.cell(2,col+1,'Stress (MPa)')
         plot,end=plot_values(r,smooth)
-        for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100)); overview.cell(i+3,col+1,float(plot[i]))
+        for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100+r.get('plot_shift',0))); overview.cell(i+3,col+1,float(plot[i]))
         series=Series(Reference(overview,min_col=col+1,min_row=3,max_row=end+2),Reference(overview,min_col=col,min_row=3,max_row=end+2),title=name)
         series.graphicalProperties.line.width=12700; chart.series.append(series)
     overview.add_chart(chart,'A1')
@@ -189,7 +189,7 @@ def export_excel(samples,path,smooth=False):
         c.series[1-series_index].graphicalProperties.noFill=True
         c.series[1-series_index].graphicalProperties.line.noFill=True
         ref=f"'Properties'!${errcol}$2:${errcol}${last}"
-        c.series[series_index].errBars=ErrorBars(errDir='y',errBarType='both',errValType='cust',plus=NumDataSource(numRef=NumRef(f=ref)),minus=NumDataSource(numRef=NumRef(f=ref)))
+        c.series[series_index].errBars=ErrorBars(errDir='y',errBarType='both',errValType='cust',noEndCap=False,plus=NumDataSource(numRef=NumRef(f=ref)),minus=NumDataSource(numRef=NumRef(f=ref)))
     format_chart(main,'Sample','Tensile strength (MPa)'); format_chart(second,'Sample',"Young's modulus (GPa)")
     second.y_axis.axId=200; second.y_axis.axPos='r'; second.y_axis.crosses='max';second.y_axis.crossAx=10
     main.y_axis.crossAx=10;main.x_axis.crossAx=100;main.x_axis.tickLblPos='low'
@@ -198,7 +198,7 @@ def export_excel(samples,path,smooth=False):
     main.legend.legendEntry=[LegendEntry(idx=1,delete=True),LegendEntry(idx=2,delete=True)]
     main+=second; bars.add_chart(main,'A1')
     for ws in wb:
-        ws.freeze_panes='A2' if ws==summary else 'P5'
+        ws.freeze_panes=None
         for row in ws:
             for cell in row:
                 cell.font=Font(name='Arial',size=14)
@@ -217,6 +217,7 @@ def process_files(configs,path,fit_min=.05,fit_max=.25,drop=.5,smooth=False,emit
         sample_fit_min,sample_fit_max=config[5:7] if len(config)>=7 else (fit_min,fit_max)
         trial_settings=config[7] if len(config)>7 else {}
         representative=config[8] if len(config)>8 else None
+        show_ss=config[9] if len(config)>9 else True
         name=Path(file).stem
         if name in samples: raise ValueError(f'Duplicate sample name: {name}')
         trials=[]
@@ -226,6 +227,8 @@ def process_files(configs,path,fit_min=.05,fit_max=.25,drop=.5,smooth=False,emit
             result=analyze_trial(raw,width,options.get('thickness',thickness),length,options.get('fit_min',sample_fit_min),options.get('fit_max',sample_fit_max),drop,overrides.get(label))
             result['included']=options.get('included',True)
             result['representative']=label==representative
+            result['plot_shift']=options.get('plot_shift',0)
+            result['show_ss']=show_ss
             trials.append((label,result))
         samples[name]=trials
     export_excel(samples,path,smooth)

@@ -14,7 +14,7 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None
-        root.title('Tensile Analyzer 1.4'); root.geometry('1280x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.5'); root.geometry('1280x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
@@ -47,7 +47,7 @@ class App:
         self.samples_canvas.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.columnconfigure(0,weight=1)
-        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Experiments']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=4,sticky='w')
+        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Experiments','Show in SS']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=4,sticky='w')
         preview=ttk.LabelFrame(frame,text='Stress-strain preview',padding=6);preview.pack(fill='both',expand=True,pady=8)
         self.preview_title=tk.StringVar(value='Import CSV files or a folder')
         ttk.Label(preview,textvariable=self.preview_title).pack(anchor='w')
@@ -80,16 +80,19 @@ class App:
             trial.set(choices[representative])
             stats=[tk.StringVar(value='—') for _ in range(3)]
             fit_lo=tk.StringVar(value='0.05');fit_hi=tk.StringVar(value='0.25')
+            show_ss=tk.BooleanVar(value=True)
             widgets=[ttk.Label(self.sample_rows,text=Path(p).stem),ttk.Entry(self.sample_rows,textvariable=thickness,width=14),
                 ttk.Combobox(self.sample_rows,textvariable=trial,values=choices,state='readonly',width=16),
                 ttk.Entry(self.sample_rows,textvariable=fit_lo,width=8),ttk.Entry(self.sample_rows,textvariable=fit_hi,width=8),
                 *[ttk.Label(self.sample_rows,textvariable=v) for v in stats],
-                ttk.Button(self.sample_rows,text='Details',command=lambda p=p:self.details(p))]
+                ttk.Button(self.sample_rows,text='Details',command=lambda p=p:self.details(p)),
+                ttk.Checkbutton(self.sample_rows,variable=show_ss,command=self.schedule_preview)]
             for col,widget in enumerate(widgets):
                 widget.grid(row=row,column=col,padx=5,pady=5,sticky='ew')
                 widget.bind('<MouseWheel>',self.scroll_samples)
-            options={label:dict(thickness=tk.StringVar(value=''),fit_lo=tk.StringVar(value=''),fit_hi=tk.StringVar(value=''),included=tk.BooleanVar(value=True)) for label in labels}
+            options={label:dict(thickness=tk.StringVar(value=''),fit_lo=tk.StringVar(value=''),fit_hi=tk.StringVar(value=''),shift=tk.StringVar(value='0'),included=tk.BooleanVar(value=True)) for label in labels}
             self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets,'stats':stats,'cache_key':None,'results':[],'fit_lo':fit_lo,'fit_hi':fit_hi,'options':options,'detail':None,'errors':[]}
+            self.items[p]['show_ss']=show_ss
             for opts in options.values():
                 for var in opts.values():var.trace_add('write',self.schedule_preview)
             fit_lo.trace_add('write',self.schedule_preview);fit_hi.trace_add('write',self.schedule_preview)
@@ -161,7 +164,7 @@ class App:
                 if not 0<=lo<hi or not math.isfinite(hi):raise ValueError(f'Invalid fit range for {Path(p).stem}')
                 options=self.trial_options(data)
                 index=data['choices'].index(data['trial'].get())
-                configs.append((p,*dims,data['overrides'].copy(),lo,hi,options,data['labels'][index]))
+                configs.append((p,*dims,data['overrides'].copy(),lo,hi,options,data['labels'][index],data['show_ss'].get()))
             if not configs:raise ValueError('Select at least one CSV')
             fit_min=.05;fit_max=.25;drop=float(self.params['Drop (%)'].get())/100
             if not 0<=fit_min<fit_max or not 0<drop<1:raise ValueError('Invalid fitting range or drop percentage')
@@ -221,6 +224,8 @@ class App:
         result={}
         for label,options in data['options'].items():
             row={'included':options['included'].get()}
+            row['plot_shift']=float(options['shift'].get() or '0')
+            if not math.isfinite(row['plot_shift']):raise ValueError(f'Invalid plot shift for trial {label}')
             for field,source in [('thickness','thickness'),('fit_min','fit_lo'),('fit_max','fit_hi')]:
                 text=options[source].get().strip()
                 value=float(text) if text else float(data[source].get())
@@ -304,9 +309,11 @@ class App:
                 missing+=sum(r is not None and r['break_strain'] is None for r in results)
                 index=data['choices'].index(data['trial'].get());label,raw=data['trials'][index]
                 selected=options[label];thickness=selected['thickness'];lo=selected['fit_min'];hi=selected['fit_max']
-                x=raw[:,2]/length*100;y=raw[:,1]/(width*thickness)
+                x=raw[:,2]/length*100+selected['plot_shift'];y=raw[:,1]/(width*thickness)
                 if self.smooth.get() and results[index] is not None:y,_=core.plot_values(results[index],True)
-                curves.append((Path(p).stem,x,y,lo,hi))
+                if data['show_ss'].get():
+                    keep=x>=0
+                    if keep.any():curves.append((Path(p).stem,x[keep],y[keep],lo+selected['plot_shift'],hi+selected['plot_shift']))
             except ValueError:
                 for var in data['stats']:var.set('—')
             detail=data.get('detail')

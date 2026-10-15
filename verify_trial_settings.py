@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory() as d:
     assert chart.y_axis.delete is False
     assert chart._charts[1].y_axis.axPos=='r'
     assert chart._charts[1].y_axis.crossAx==10
-    assert chart.y_axis.numFmt=='General'
+    assert chart.y_axis.numFmt.formatCode=='General'
     assert all(ws.freeze_panes is None for ws in wb)
     assert chart.series[0].errBars.noEndCap is False
     assert len(wb['Stress_Strain']._charts[0].series)==0

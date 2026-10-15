@@ -15,10 +15,12 @@ jobs:
       - run: python -m py_compile tensile_core.py tensile_gui.py tensile_details.py tensile_widgets.py
       - run: python verify_analysis.py
       - run: python -m PyInstaller --noconfirm --clean --windowed --onedir --name TensileAnalyzer --icon assets/tensile-analyzer.ico --add-data "assets;assets" tensile_gui.py
+      - run: python verify_windows_icon.py dist/TensileAnalyzer/TensileAnalyzer.exe
       - shell: pwsh
         run: |
           Copy-Item -Recurse examples dist/TensileAnalyzer/examples
           Copy-Item README.md dist/TensileAnalyzer/README.md
+          Rename-Item dist/TensileAnalyzer/TensileAnalyzer.exe TensileAnalyzer-1.13.exe
       - uses: actions/upload-artifact@v4
         with:
           name: TensileAnalyzer-Windows

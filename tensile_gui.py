@@ -15,7 +15,7 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None;self.syncing_shift=False
-        root.title('Tensile Analyzer 1.12'); root.geometry('1400x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.13'); root.geometry('1400x850'); root.minsize(1050,700)
         assets=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
         self.app_icons=[]
         for size in (32,48,128,256):

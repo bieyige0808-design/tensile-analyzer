@@ -12,7 +12,7 @@ app.add(files);first,second=app.items.values();first['thickness'].set('.01')
 configs,skipped=app.export_configs()
 assert len(configs)==1 and skipped==[files[1].stem]
 first['sample_shift'].set('.1');first['options'][first['labels'][0]]['shift'].set('.02')
-assert abs(app.trial_options(first)[first['labels'][0]]['plot_shift']-.12)<1e-9
+assert abs(app.trial_options(first)[first['labels'][0]]['plot_shift']-.02)<1e-9
 buttons=[w for w in first['widgets'][-1].winfo_children() if isinstance(w,tk.Button)]
 buttons[1].invoke();assert first['sample_shift'].get()=='.11' or first['sample_shift'].get()=='0.11'
 buttons[0].invoke();assert first['sample_shift'].get()=='0.10'

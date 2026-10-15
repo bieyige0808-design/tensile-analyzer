@@ -14,8 +14,8 @@ from tensile_widgets import shift_control
 class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
-        self.active=None; self.preview_job=None
-        root.title('Tensile Analyzer 1.7'); root.geometry('1360x850'); root.minsize(1050,700)
+        self.active=None; self.preview_job=None;self.syncing_shift=False
+        root.title('Tensile Analyzer 1.8'); root.geometry('1360x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
@@ -97,7 +97,8 @@ class App:
             self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets,'stats':stats,'cache_key':None,'results':[],'fit_lo':fit_lo,'fit_hi':fit_hi,'options':options,'detail':None,'errors':[]}
             self.items[p]['show_ss']=show_ss
             self.items[p]['sample_shift']=sample_shift
-            sample_shift.trace_add('write',self.schedule_preview)
+            self.items[p]['sample_shift_last']=0.;self.items[p]['auto_shifts']={}
+            sample_shift.trace_add('write',lambda *args,p=p:self.change_sample_shift(p))
             for opts in options.values():
                 for var in opts.values():var.trace_add('write',self.schedule_preview)
             fit_lo.trace_add('write',self.schedule_preview);fit_hi.trace_add('write',self.schedule_preview)
@@ -135,6 +136,7 @@ class App:
         configs=[];skipped=[]
         for p,data in self.items.items():
             if not data['thickness'].get().strip():skipped.append(Path(p).stem);continue
+            self.evaluate_sample(data)
             dims=[float(self.params['Width (mm)'].get()),float(data['thickness'].get()),float(self.params['Gauge length (mm)'].get())]
             if any(not math.isfinite(v) or v<=0 for v in dims):raise ValueError('Dimensions must be finite and positive')
             lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get())
@@ -246,7 +248,7 @@ class App:
         result={}
         for label,options in data['options'].items():
             row={'included':options['included'].get(),'auto_fit':True}
-            row['plot_shift']=float(options['shift'].get() or '0')+float(data['sample_shift'].get() or '0')
+            row['plot_shift']=float(options['shift'].get() or '0')
             if not math.isfinite(row['plot_shift']):raise ValueError(f'Invalid plot shift for trial {label}')
             for field,source in [('thickness','thickness'),('fit_min','fit_lo'),('fit_max','fit_hi')]:
                 text=options[source].get().strip()
@@ -256,6 +258,28 @@ class App:
             if row['thickness']<=0 or not 0<=row['fit_min']<row['fit_max']:raise ValueError(f'Check thickness and fit range for trial {label}')
             result[label]=row
         return result
+
+    def change_sample_shift(self,p):
+        if self.syncing_shift or p not in self.items:return
+        data=self.items[p]
+        try:
+            value=float(data['sample_shift'].get() or '0')
+            if not math.isfinite(value):return
+        except ValueError:return
+        delta=value-data['sample_shift_last'];data['sample_shift_last']=value
+        for opts in data['options'].values():
+            try:current=float(opts['shift'].get() or '0')
+            except ValueError:continue
+            opts['shift'].set(f'{current+delta:.8g}')
+        self.schedule_preview()
+
+    def sync_sample_shift(self,data,value):
+        self.syncing_shift=True
+        try:
+            data['sample_shift_last']=value
+            text=f'{value:.8g}'
+            if data['sample_shift'].get()!=text:data['sample_shift'].set(text)
+        finally:self.syncing_shift=False
 
     def evaluate_sample(self,data):
         width=float(self.params['Width (mm)'].get());length=float(self.params['Gauge length (mm)'].get())
@@ -278,11 +302,17 @@ class App:
         for label,r in zip(data['labels'],data['results']):
             if r is None:continue
             options[label]['fit_min']=r['fit_min'];options[label]['fit_max']=r['fit_max'];options[label]['plot_origin']=r['plot_origin']
+            automatic=-r['plot_origin'];previous=data['auto_shifts'].get(label,0.)
+            if label not in data['auto_shifts'] or abs(automatic-previous)>1e-12:
+                actual=float(data['options'][label]['shift'].get() or '0')+automatic-previous
+                data['options'][label]['shift'].set(f'{actual:.10g}');data['auto_shifts'][label]=automatic
+            options[label]['plot_shift']=float(data['options'][label]['shift'].get() or '0')
             for key,metric in [('fit_lo','fit_min'),('fit_hi','fit_max')]:
                 text=f'{r[metric]:.8g}'
                 if data['options'][label][key].get()!=text:data['options'][label][key].set(text)
         index=data['choices'].index(data['trial'].get());r=data['results'][index]
         if r is not None:
+            self.sync_sample_shift(data,options[data['labels'][index]]['plot_shift'])
             for key,metric in [('fit_lo','fit_min'),('fit_hi','fit_max')]:
                 text=f'{r[metric]:.8g}'
                 if data[key].get()!=text:data[key].set(text)
@@ -342,12 +372,11 @@ class App:
                 missing+=sum(r is not None and r['break_strain'] is None for r in results)
                 index=data['choices'].index(data['trial'].get());label,raw=data['trials'][index]
                 selected=options[label];thickness=selected['thickness'];lo=selected['fit_min'];hi=selected['fit_max']
-                origin=selected.get('plot_origin',0)
-                x=raw[:,2]/length*100-origin+selected['plot_shift'];y=raw[:,1]/(width*thickness)
+                x=raw[:,2]/length*100+selected['plot_shift'];y=raw[:,1]/(width*thickness)
                 if self.smooth.get() and results[index] is not None:y,_=core.plot_values(results[index],True)
                 if data['show_ss'].get():
                     keep=x>=0
-                    if keep.any():curves.append((Path(p).stem,x[keep],y[keep],lo-origin+selected['plot_shift'],hi-origin+selected['plot_shift']))
+                    if keep.any():curves.append((Path(p).stem,x[keep],y[keep],lo+selected['plot_shift'],hi+selected['plot_shift']))
             except ValueError:
                 for var in data['stats']:var.set('—')
             detail=data.get('detail')

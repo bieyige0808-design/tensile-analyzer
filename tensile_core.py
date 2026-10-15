@@ -98,12 +98,15 @@ def analyze_trial(raw,width,thickness,length,fit_min=.05,fit_max=.25,drop=.5,ove
     predicted=slope*strain[mask]+intercept
     sst=float(np.sum((stress[mask]-stress[mask].mean())**2))
     r2=1-float(np.sum((stress[mask]-predicted)**2))/sst if sst else None
+    if auto_fit and (not np.isfinite(slope) or slope<=0):
+        raise ValueError('Automatic strain origin requires a positive finite modulus')
+    plot_origin=float(-intercept/slope*100) if auto_fit else 0.
     return dict(raw=raw,strain=strain,stress=stress,break_index=break_idx,
         break_status=status,strength=float(stress[:upto].max()),modulus=float(slope/1000),
         break_strain=float(strain[break_idx]*100) if break_idx is not None else None,
         toughness=float(np.trapezoid(stress[:upto],strain[:upto])) if break_idx is not None else None,
         r2=r2,intercept=float(intercept),fit_min=fit_min,fit_max=fit_max,
-        width=width,thickness=thickness,length=length,auto_fit=auto_fit,plot_origin=fit_min if auto_fit else 0)
+        width=width,thickness=thickness,length=length,auto_fit=auto_fit,plot_origin=plot_origin,plot_shift=-plot_origin)
 
 def text_style():
     cp=CharacterProperties(latin=DFont(typeface='Arial'),sz=1400,b=False)
@@ -177,7 +180,7 @@ def export_excel(samples,path,smooth=False):
             for i in range(len(r['stress'])):
                 strain=r['strain'][i]*100
                 fit=r['modulus']*1000*r['strain'][i]+r['intercept'] if r['fit_min']<=strain<=r['fit_max'] else None
-                vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None,strain-r.get('plot_origin',0)+r.get('plot_shift',0)]
+                vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None,strain+r.get('plot_shift',0)]
                 for j,v in enumerate(vals,16): ws.cell(i+5,j,float(v) if isinstance(v,np.generic) else v)
             chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')
             for ycol,title,count in [(21,'Stress',end),(22,'Modulus fit',len(r['stress']))]:
@@ -190,7 +193,7 @@ def export_excel(samples,path,smooth=False):
     for n,(name,label,r) in enumerate(representatives):
         col=16+n*2; overview.cell(1,col,name); overview.cell(2,col,'Strain (%)'); overview.cell(2,col+1,'Stress (MPa)')
         plot,end=plot_values(r,smooth)
-        for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100-r.get('plot_origin',0)+r.get('plot_shift',0))); overview.cell(i+3,col+1,float(plot[i]))
+        for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100+r.get('plot_shift',0))); overview.cell(i+3,col+1,float(plot[i]))
         series=Series(Reference(overview,min_col=col+1,min_row=3,max_row=end+2),Reference(overview,min_col=col,min_row=3,max_row=end+2),title=name)
         series.graphicalProperties.line.width=12700; chart.series.append(series)
     chart.legend.position='t';chart.legend.overlay=False
@@ -251,7 +254,7 @@ def process_files(configs,path,fit_min=.05,fit_max=.25,drop=.5,smooth=False,emit
             result=analyze_trial(raw,width,options.get('thickness',thickness),length,options.get('fit_min',sample_fit_min),options.get('fit_max',sample_fit_max),drop,overrides.get(label),auto_fit=options.get('auto_fit',False))
             result['included']=options.get('included',True)
             result['representative']=label==representative
-            result['plot_shift']=options.get('plot_shift',0)
+            result['plot_shift']=options.get('plot_shift',result['plot_shift'])
             result['show_ss']=show_ss
             trials.append((label,result))
         samples[name]=trials

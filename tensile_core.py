@@ -133,6 +133,12 @@ def format_chart(chart,x_title,y_title):
                 for run in p.r:
                     run.rPr=CharacterProperties(latin=DFont(typeface='Arial'),sz=1400,b=False)
     chart.x_axis.axPos='b';chart.y_axis.axPos='l'
+    if isinstance(chart,BarChart):
+        # Category axes are indexed by Excel; a numeric minimum of zero creates
+        # an empty category before the first (1-based) sample on some versions.
+        chart.x_axis.scaling.min=None
+        chart.x_axis.scaling.max=None
+        chart.x_axis.tickLblSkip=1
     if chart.legend: chart.legend.txPr=text_style(); chart.legend.position='b';chart.legend.overlay=False
 
 def included_trials(trials):

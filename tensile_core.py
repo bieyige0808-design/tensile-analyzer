@@ -171,6 +171,8 @@ def export_excel(samples,path,smooth=False):
         for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100+r.get('plot_shift',0))); overview.cell(i+3,col+1,float(plot[i]))
         series=Series(Reference(overview,min_col=col+1,min_row=3,max_row=end+2),Reference(overview,min_col=col,min_row=3,max_row=end+2),title=name)
         series.graphicalProperties.line.width=12700; chart.series.append(series)
+    chart.legend.position='t';chart.legend.overlay=False
+    chart.layout.manualLayout.y=.10
     overview.add_chart(chart,'A1')
     main=BarChart(); second=BarChart(); main.grouping='clustered'; second.grouping='clustered'
     count=len(samples)+1
@@ -196,7 +198,7 @@ def export_excel(samples,path,smooth=False):
     # Reserve both margins for the two explicit value axes in the square figure.
     main.layout=Layout(manualLayout=ManualLayout(layoutTarget='inner',xMode='edge',yMode='edge',wMode='factor',hMode='factor',x=.10,y=.04,w=.80,h=.80))
     main.legend.legendEntry=[LegendEntry(idx=1,delete=True),LegendEntry(idx=2,delete=True)]
-    main+=second; bars.add_chart(main,'A1')
+    main+=second;main.legend=None;bars.add_chart(main,'A1')
     for ws in wb:
         ws.freeze_panes=None
         for row in ws:

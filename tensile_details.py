@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 import numpy as np
 import tensile_core as core
+from tensile_widgets import shift_control
 
 class TrialDetails:
     def __init__(self,app,path):
@@ -29,7 +30,7 @@ class TrialDetails:
             ttk.Label(self.rows,text=f'{index}: {label}').grid(row=index,column=1,padx=5)
             for col,key in enumerate(('thickness','fit_lo','fit_hi'),2):
                 ttk.Entry(self.rows,textvariable=options[key],width=9).grid(row=index,column=col,padx=4,pady=4)
-            ttk.Entry(self.rows,textvariable=options['shift'],width=8).grid(row=index,column=5,padx=4,pady=4)
+            shift_control(self.rows,options['shift']).grid(row=index,column=5,padx=4,pady=4)
             values=[tk.StringVar(value='—') for _ in range(5)];self.result_vars.append(values)
             for col,var in enumerate(values,6):ttk.Label(self.rows,textvariable=var,wraplength=140).grid(row=index,column=col,padx=5,sticky='w')
         self.means=tk.StringVar(value='Means: enter sample dimensions')
@@ -48,6 +49,18 @@ class TrialDetails:
         sb=ttk.Scrollbar(raw_frame,orient='vertical',command=self.raw_table.yview)
         self.raw_table.configure(yscrollcommand=sb.set);sb.pack(side='right',fill='y');self.raw_table.pack(fill='x')
         self.window.after(50,self.refresh);self.show_raw()
+        self.bind_scroll(self.canvas);self.bind_scroll(self.rows)
+
+    def bind_scroll(self,widget):
+        import sys
+        def wheel(event):
+            delta=int(-event.delta) if sys.platform=='darwin' else int(-event.delta/120)
+            if delta:self.canvas.yview_scroll(delta,'units')
+            return 'break'
+        widget.bind('<MouseWheel>',wheel)
+        widget.bind('<Button-4>',lambda e:self.canvas.yview_scroll(-1,'units'))
+        widget.bind('<Button-5>',lambda e:self.canvas.yview_scroll(1,'units'))
+        for child in widget.winfo_children():self.bind_scroll(child)
 
     def show_raw(self):
         index=self.data['choices'].index(self.raw_choice.get())

@@ -9,16 +9,17 @@ import tensile_core as core
 import math
 import numpy as np
 from tensile_details import TrialDetails
+from tensile_widgets import shift_control
 
 class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None
-        root.title('Tensile Analyzer 1.5'); root.geometry('1280x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.6'); root.geometry('1360x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
-        for text,command in [('Select files',self.files),('Select folder',self.folder),('Remove selected',self.remove)]: ttk.Button(top,text=text,command=command).pack(side='left',padx=3)
+        for text,command in [('Select files',self.files),('Select folder',self.folder),('Remove selected',self.remove),('Clear imported data',self.clear_imports)]: ttk.Button(top,text=text,command=command).pack(side='left',padx=3)
         self.run_button=ttk.Button(top,text='RUN / Export Excel',command=self.start);self.run_button.pack(side='right',padx=10)
         self.status=tk.StringVar(value='Ready');ttk.Label(top,textvariable=self.status).pack(side='right')
         self.params={}
@@ -47,7 +48,7 @@ class App:
         self.samples_canvas.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.columnconfigure(0,weight=1)
-        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Experiments','Show in SS']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=4,sticky='w')
+        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Experiments','Show in SS','Plot shift (%)']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=3,sticky='w')
         preview=ttk.LabelFrame(frame,text='Stress-strain preview',padding=6);preview.pack(fill='both',expand=True,pady=8)
         self.preview_title=tk.StringVar(value='Import CSV files or a folder')
         ttk.Label(preview,textvariable=self.preview_title).pack(anchor='w')
@@ -81,18 +82,22 @@ class App:
             stats=[tk.StringVar(value='—') for _ in range(3)]
             fit_lo=tk.StringVar(value='0.05');fit_hi=tk.StringVar(value='0.25')
             show_ss=tk.BooleanVar(value=True)
+            sample_shift=tk.StringVar(value='0')
             widgets=[ttk.Label(self.sample_rows,text=Path(p).stem),ttk.Entry(self.sample_rows,textvariable=thickness,width=14),
                 ttk.Combobox(self.sample_rows,textvariable=trial,values=choices,state='readonly',width=16),
                 ttk.Entry(self.sample_rows,textvariable=fit_lo,width=8),ttk.Entry(self.sample_rows,textvariable=fit_hi,width=8),
                 *[ttk.Label(self.sample_rows,textvariable=v) for v in stats],
                 ttk.Button(self.sample_rows,text='Details',command=lambda p=p:self.details(p)),
-                ttk.Checkbutton(self.sample_rows,variable=show_ss,command=self.schedule_preview)]
+                ttk.Checkbutton(self.sample_rows,variable=show_ss,command=self.schedule_preview),
+                shift_control(self.sample_rows,sample_shift)]
             for col,widget in enumerate(widgets):
                 widget.grid(row=row,column=col,padx=5,pady=5,sticky='ew')
                 widget.bind('<MouseWheel>',self.scroll_samples)
             options={label:dict(thickness=tk.StringVar(value=''),fit_lo=tk.StringVar(value=''),fit_hi=tk.StringVar(value=''),shift=tk.StringVar(value='0'),included=tk.BooleanVar(value=True)) for label in labels}
             self.items[p]={'iid':iid,'labels':labels,'overrides':{},'thickness':thickness,'trial':trial,'choices':choices,'trials':trials,'widgets':widgets,'stats':stats,'cache_key':None,'results':[],'fit_lo':fit_lo,'fit_hi':fit_hi,'options':options,'detail':None,'errors':[]}
             self.items[p]['show_ss']=show_ss
+            self.items[p]['sample_shift']=sample_shift
+            sample_shift.trace_add('write',self.schedule_preview)
             for opts in options.values():
                 for var in opts.values():var.trace_add('write',self.schedule_preview)
             fit_lo.trace_add('write',self.schedule_preview);fit_hi.trace_add('write',self.schedule_preview)
@@ -115,6 +120,28 @@ class App:
         for row,data in enumerate(self.items.values(),1):
             for widget in data['widgets']:widget.grid_configure(row=row)
         self.active=next(iter(self.items),None);self.schedule_preview()
+
+    def clear_imports(self):
+        if self.running:return
+        for data in self.items.values():
+            detail=data.get('detail')
+            if detail is not None and detail.window.winfo_exists():detail.window.destroy()
+            for widget in data['widgets']:widget.destroy()
+        self.tree.delete(*self.tree.get_children());self.items.clear();self.active=None
+        self.samples_canvas.yview_moveto(0);self.status.set('Imported data cleared')
+        self.schedule_preview()
+
+    def export_configs(self):
+        configs=[];skipped=[]
+        for p,data in self.items.items():
+            if not data['thickness'].get().strip():skipped.append(Path(p).stem);continue
+            dims=[float(self.params['Width (mm)'].get()),float(data['thickness'].get()),float(self.params['Gauge length (mm)'].get())]
+            if any(not math.isfinite(v) or v<=0 for v in dims):raise ValueError('Dimensions must be finite and positive')
+            lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get())
+            if not 0<=lo<hi or not math.isfinite(hi):raise ValueError(f'Invalid fit range for {Path(p).stem}')
+            options=self.trial_options(data);index=data['choices'].index(data['trial'].get())
+            configs.append((p,*dims,data['overrides'].copy(),lo,hi,options,data['labels'][index],data['show_ss'].get()))
+        return configs,skipped
     def apply(self):
         if self.running:return
         for iid in self.tree.selection():
@@ -156,16 +183,8 @@ class App:
     def start(self):
         if self.running:return
         try:
-            configs=[]
-            for p,data in self.items.items():
-                dims=[float(self.params['Width (mm)'].get()),float(data['thickness'].get()),float(self.params['Gauge length (mm)'].get())]
-                if any(not math.isfinite(v) or v<=0 for v in dims):raise ValueError('Dimensions must be finite and positive')
-                lo=float(data['fit_lo'].get());hi=float(data['fit_hi'].get())
-                if not 0<=lo<hi or not math.isfinite(hi):raise ValueError(f'Invalid fit range for {Path(p).stem}')
-                options=self.trial_options(data)
-                index=data['choices'].index(data['trial'].get())
-                configs.append((p,*dims,data['overrides'].copy(),lo,hi,options,data['labels'][index],data['show_ss'].get()))
-            if not configs:raise ValueError('Select at least one CSV')
+            configs,skipped=self.export_configs();self.skipped_samples=skipped
+            if not configs:raise ValueError('Enter thickness for at least one imported sample')
             fit_min=.05;fit_max=.25;drop=float(self.params['Drop (%)'].get())/100
             if not 0<=fit_min<fit_max or not 0<drop<1:raise ValueError('Invalid fitting range or drop percentage')
             folder=Path(self.save.get())
@@ -173,6 +192,7 @@ class App:
         except ValueError as e:messagebox.showerror('Check settings',str(e));return
         path=folder/f'Tensile_Analysis_{datetime.now():%Y%m%d_%H%M%S_%f}.xlsx'
         self.running=True;self.run_button.configure(state='disabled');self.status.set('Running...')
+        if skipped:self.events.put(('log','Skipped samples without thickness: '+', '.join(skipped)))
         smooth=self.smooth.get()
         def worker():
             try:
@@ -191,7 +211,9 @@ class App:
                     else:
                         path,samples=value;missing=sum(r['break_index'] is None for trials in samples.values() for _,r in trials)
                         self.status.set(f'Finished. Fracture not detected: {missing}')
-                        messagebox.showinfo('Workbook saved',f'{path}\nFracture not detected: {missing}. Set manual points and rerun if needed.')
+                        skipped=getattr(self,'skipped_samples',[])
+                        suffix='\nSkipped (no thickness): '+', '.join(skipped) if skipped else ''
+                        messagebox.showinfo('Workbook saved',f'{path}\nFracture not detected: {missing}. Set manual points and rerun if needed.{suffix}')
                         try:
                             if sys.platform=='win32':os.startfile(path)
                             elif sys.platform=='darwin':subprocess.run(['open',str(path)],check=True)
@@ -207,7 +229,7 @@ class App:
         self.active=p;self.tree.selection_set(self.items[p]['iid']);self.schedule_preview()
 
     def schedule_preview(self,*args):
-        if self.preview_job is not None:self.root.after_cancel(self.preview_job)
+        if self.preview_job is not None:return
         self.preview_job=self.root.after(150,self.draw_preview)
 
     def scroll_samples(self,event):
@@ -224,7 +246,7 @@ class App:
         result={}
         for label,options in data['options'].items():
             row={'included':options['included'].get()}
-            row['plot_shift']=float(options['shift'].get() or '0')
+            row['plot_shift']=float(options['shift'].get() or '0')+float(data['sample_shift'].get() or '0')
             if not math.isfinite(row['plot_shift']):raise ValueError(f'Invalid plot shift for trial {label}')
             for field,source in [('thickness','thickness'),('fit_min','fit_lo'),('fit_max','fit_hi')]:
                 text=options[source].get().strip()
@@ -240,7 +262,7 @@ class App:
         drop=float(self.params['Drop (%)'].get())/100
         if any(not math.isfinite(v) or v<=0 for v in (width,length)):raise ValueError('Check common dimensions')
         options=self.trial_options(data)
-        key=(width,length,drop,tuple((label,tuple(sorted(row.items()))) for label,row in options.items()),tuple(sorted(data['overrides'].items())))
+        key=(width,length,drop,tuple((label,tuple(sorted((k,v) for k,v in row.items() if k!='plot_shift'))) for label,row in options.items()),tuple(sorted(data['overrides'].items())))
         if key!=data['cache_key']:
             results=[];errors=[]
             for label,raw in data['trials']:

@@ -15,7 +15,15 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None;self.syncing_shift=False
-        root.title('Tensile Analyzer 1.11'); root.geometry('1400x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.12'); root.geometry('1400x850'); root.minsize(1050,700)
+        assets=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
+        self.app_icons=[]
+        for size in (32,48,128,256):
+            icon=assets/f'tensile-analyzer-{size}.png'
+            if icon.is_file(): self.app_icons.append(tk.PhotoImage(file=str(icon)))
+        if self.app_icons: root.iconphoto(True,*self.app_icons)
+        if sys.platform=='win32' and (assets/'tensile-analyzer.ico').is_file():
+            root.iconbitmap(str(assets/'tensile-analyzer.ico'))
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
@@ -415,4 +423,7 @@ class App:
         self.preview_note.set(f'Bold segments: modulus fitting ranges. Break mean excludes undetected fractures ({missing}). Failed fits: {failed}. Run generates Excel.')
 
 if __name__=='__main__':
+    if sys.platform=='win32':
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('TensileAnalyzer.Desktop')
     root=tk.Tk();App(root);root.mainloop()

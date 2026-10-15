@@ -15,7 +15,7 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None;self.syncing_shift=False
-        root.title('Tensile Analyzer 1.9'); root.geometry('1360x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.10'); root.geometry('1400x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
@@ -48,7 +48,7 @@ class App:
         self.samples_canvas.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.bind('<MouseWheel>',self.scroll_samples)
         self.sample_rows.columnconfigure(0,weight=1)
-        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Experiments','Show in SS','Plot shift (%)']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=3,sticky='w')
+        for col,title in enumerate(['Sample','Thickness (mm)','Trial number','Fit min (%)','Fit max (%)','Mean strength\n(MPa)','Mean modulus\n(GPa)','Mean break strain\n(%)','Mean toughness\n(MJ/m³)','Experiments','Show in SS','Plot shift (%)']):ttk.Label(self.sample_rows,text=title).grid(row=0,column=col,padx=3,sticky='w')
         preview=ttk.LabelFrame(frame,text='Stress-strain preview',padding=6);preview.pack(fill='both',expand=True,pady=8)
         self.preview_title=tk.StringVar(value='Import CSV files or a folder')
         ttk.Label(preview,textvariable=self.preview_title).pack(anchor='w')
@@ -79,7 +79,7 @@ class App:
             peaks=[float(raw[:,1].max()) for _,raw in trials]
             representative=int(np.argmin(abs(np.array(peaks)-np.mean(peaks))))
             trial.set(choices[representative])
-            stats=[tk.StringVar(value='—') for _ in range(3)]
+            stats=[tk.StringVar(value='—') for _ in range(4)]
             fit_lo=tk.StringVar(value='0.05');fit_hi=tk.StringVar(value='0.25')
             show_ss=tk.BooleanVar(value=True)
             sample_shift=tk.StringVar(value='0')
@@ -366,7 +366,7 @@ class App:
                 width=float(self.params['Width (mm)'].get());length=float(self.params['Gauge length (mm)'].get())
                 results=data['results']
                 stats=core.sample_statistics([(label,r) for label,r in zip(data['labels'],results) if r is not None])
-                for var,metric in zip(data['stats'],('strength','modulus','break_strain')):
+                for var,metric in zip(data['stats'],('strength','modulus','break_strain','toughness')):
                     value=stats[metric][0];var.set(f'{value:.4g}' if value is not None else '—')
                 failed+=sum(r is None for r in results)
                 missing+=sum(r is not None and r['break_strain'] is None for r in results)

@@ -16,6 +16,9 @@ opts['included'].set(False);app.draw_preview()
 assert abs(data['results'][0]['strength']-old/2)<1e-8
 expected=np.mean([r['strength'] for r in data['results'][1:]])
 assert abs(float(data['stats'][0].get())-expected)<.05
+expected_toughness=np.mean([r['toughness'] for r in data['results'][1:] if r['toughness'] is not None])
+assert len(data['stats'])==4
+assert abs(float(data['stats'][3].get())-expected_toughness)<.0005
 app.details(str(p.resolve()));detail=data['detail'];detail.refresh()
 assert detail.result_vars[0][4].get().endswith('excluded')
 assert '2/3 included' in detail.means.get()

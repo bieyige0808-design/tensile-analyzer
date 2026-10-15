@@ -12,7 +12,7 @@ class TrialDetails:
         self.window=tk.Toplevel(app.root);self.window.title(f'Experiments — {Path(path).stem}')
         self.window.geometry('1280x820');self.window.minsize(1050,680)
         outer=ttk.Frame(self.window,padding=10);outer.pack(fill='both',expand=True)
-        ttk.Label(outer,text='Blank settings inherit sample values. Plot shift (%): positive = right, negative = left; calculations use original strain.').pack(anchor='w')
+        ttk.Label(outer,text='Modulus: maximum slope over a fixed 0.20% strain window, before fracture. Plot zero = window start; manual shifts add to it.').pack(anchor='w')
         table_box=ttk.Frame(outer);table_box.pack(fill='x',pady=6)
         self.canvas=tk.Canvas(table_box,height=180,highlightthickness=0)
         scroll=ttk.Scrollbar(table_box,orient='vertical',command=self.canvas.yview)
@@ -29,7 +29,7 @@ class TrialDetails:
             ttk.Checkbutton(self.rows,variable=options['included']).grid(row=index,column=0)
             ttk.Label(self.rows,text=f'{index}: {label}').grid(row=index,column=1,padx=5)
             for col,key in enumerate(('thickness','fit_lo','fit_hi'),2):
-                ttk.Entry(self.rows,textvariable=options[key],width=9).grid(row=index,column=col,padx=4,pady=4)
+                ttk.Entry(self.rows,textvariable=options[key],width=9,state='normal' if key=='thickness' else 'readonly').grid(row=index,column=col,padx=4,pady=4)
             shift_control(self.rows,options['shift']).grid(row=index,column=5,padx=4,pady=4)
             values=[tk.StringVar(value='—') for _ in range(5)];self.result_vars.append(values)
             for col,var in enumerate(values,6):ttk.Label(self.rows,textvariable=var,wraplength=140).grid(row=index,column=col,padx=5,sticky='w')
@@ -89,7 +89,7 @@ class TrialDetails:
                 for var,key in zip(variables,('strength','modulus','break_strain','toughness')):
                     value=result[key];var.set(f'{value:.5g}' if value is not None else '—')
                 variables[4].set(result['break_status']+(' / excluded' if not included else ''))
-            x=raw[:,2]/length*100+options[label]['plot_shift'];y=raw[:,1]/(width*options[label]['thickness'])
+            x=raw[:,2]/length*100-options[label].get('plot_origin',0)+options[label]['plot_shift'];y=raw[:,1]/(width*options[label]['thickness'])
             if result is not None and self.app.smooth.get():y,_=core.plot_values(result,True)
             keep=x>=0
             if keep.any():curves.append((label,x[keep],y[keep],options[label],included))
@@ -121,7 +121,7 @@ class TrialDetails:
                     points.extend((left+x[i]/xmax*(right-left),bottom-max(0,y[i])/ymax*(bottom-top)))
             if len(points)>=4:c.create_line(*points,fill=color,width=1.5,dash=() if included else (4,4))
             bold=[]
-            shift=settings['plot_shift']
+            shift=settings['plot_shift']-settings.get('plot_origin',0)
             for i in np.flatnonzero((x>=settings['fit_min']+shift)&(x<=settings['fit_max']+shift)):
                 bold.extend((left+x[i]/xmax*(right-left),bottom-max(0,y[i])/ymax*(bottom-top)))
             if len(bold)>=4:c.create_line(*bold,fill=color,width=4)

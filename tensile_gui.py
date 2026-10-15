@@ -15,7 +15,7 @@ class App:
     def __init__(self,root):
         self.root=root; self.items={}; self.events=queue.Queue(); self.running=False
         self.active=None; self.preview_job=None
-        root.title('Tensile Analyzer 1.6'); root.geometry('1360x850'); root.minsize(1050,700)
+        root.title('Tensile Analyzer 1.7'); root.geometry('1360x850'); root.minsize(1050,700)
         root.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(root,padding=15); frame.pack(fill='both',expand=True)
         top=ttk.Frame(frame); top.pack(fill='x')
@@ -35,7 +35,7 @@ class App:
         self.tree=ttk.Treeview(frame,columns=('name','width','thickness','length','trials'),show='headings',height=7,selectmode='extended')
         for col,title in [('name','Sample'),('width','Width (mm)'),('thickness','Thickness (mm)'),('length','Gauge length (mm)'),('trials','Trials')]: self.tree.heading(col,text=title); self.tree.column(col,width=160)
         # Keep the old tree as internal state for manual fracture and export.
-        samples_box=ttk.LabelFrame(frame,text='Samples / modulus fitting range (strain %)',padding=4)
+        samples_box=ttk.LabelFrame(frame,text='Samples / maximum modulus in automatic 0.20% strain windows',padding=4)
         samples_box.pack(fill='x')
         self.samples_canvas=tk.Canvas(samples_box,height=190,highlightthickness=0)
         scroll=ttk.Scrollbar(samples_box,orient='vertical',command=self.samples_canvas.yview)
@@ -85,7 +85,7 @@ class App:
             sample_shift=tk.StringVar(value='0')
             widgets=[ttk.Label(self.sample_rows,text=Path(p).stem),ttk.Entry(self.sample_rows,textvariable=thickness,width=14),
                 ttk.Combobox(self.sample_rows,textvariable=trial,values=choices,state='readonly',width=16),
-                ttk.Entry(self.sample_rows,textvariable=fit_lo,width=8),ttk.Entry(self.sample_rows,textvariable=fit_hi,width=8),
+                ttk.Entry(self.sample_rows,textvariable=fit_lo,width=8,state='readonly'),ttk.Entry(self.sample_rows,textvariable=fit_hi,width=8,state='readonly'),
                 *[ttk.Label(self.sample_rows,textvariable=v) for v in stats],
                 ttk.Button(self.sample_rows,text='Details',command=lambda p=p:self.details(p)),
                 ttk.Checkbutton(self.sample_rows,variable=show_ss,command=self.schedule_preview),
@@ -245,7 +245,7 @@ class App:
     def trial_options(self,data):
         result={}
         for label,options in data['options'].items():
-            row={'included':options['included'].get()}
+            row={'included':options['included'].get(),'auto_fit':True}
             row['plot_shift']=float(options['shift'].get() or '0')+float(data['sample_shift'].get() or '0')
             if not math.isfinite(row['plot_shift']):raise ValueError(f'Invalid plot shift for trial {label}')
             for field,source in [('thickness','thickness'),('fit_min','fit_lo'),('fit_max','fit_hi')]:
@@ -262,19 +262,30 @@ class App:
         drop=float(self.params['Drop (%)'].get())/100
         if any(not math.isfinite(v) or v<=0 for v in (width,length)):raise ValueError('Check common dimensions')
         options=self.trial_options(data)
-        key=(width,length,drop,tuple((label,tuple(sorted((k,v) for k,v in row.items() if k!='plot_shift'))) for label,row in options.items()),tuple(sorted(data['overrides'].items())))
+        key=(width,length,drop,tuple((label,tuple(sorted((k,v) for k,v in row.items() if k not in ('plot_shift','fit_min','fit_max')))) for label,row in options.items()),tuple(sorted(data['overrides'].items())))
         if key!=data['cache_key']:
             results=[];errors=[]
             for label,raw in data['trials']:
                 settings=options[label]
                 try:
-                    r=core.analyze_trial(raw,width,settings['thickness'],length,settings['fit_min'],settings['fit_max'],drop,data['overrides'].get(label))
+                    r=core.analyze_trial(raw,width,settings['thickness'],length,settings['fit_min'],settings['fit_max'],drop,data['overrides'].get(label),auto_fit=True)
                     r['included']=settings['included'];results.append(r);errors.append('')
                 except ValueError as e:results.append(None);errors.append(str(e))
             data['results']=results;data['errors']=errors;data['cache_key']=key
             eligible=[(i,r) for i,r in enumerate(results) if r is not None and r['included']]
             if eligible:
                 mean=float(np.mean([r['strength'] for _,r in eligible]));i,_=min(eligible,key=lambda item:abs(item[1]['strength']-mean));data['trial'].set(data['choices'][i])
+        for label,r in zip(data['labels'],data['results']):
+            if r is None:continue
+            options[label]['fit_min']=r['fit_min'];options[label]['fit_max']=r['fit_max'];options[label]['plot_origin']=r['plot_origin']
+            for key,metric in [('fit_lo','fit_min'),('fit_hi','fit_max')]:
+                text=f'{r[metric]:.8g}'
+                if data['options'][label][key].get()!=text:data['options'][label][key].set(text)
+        index=data['choices'].index(data['trial'].get());r=data['results'][index]
+        if r is not None:
+            for key,metric in [('fit_lo','fit_min'),('fit_hi','fit_max')]:
+                text=f'{r[metric]:.8g}'
+                if data[key].get()!=text:data[key].set(text)
         return options
 
     def draw_single_preview(self):
@@ -331,11 +342,12 @@ class App:
                 missing+=sum(r is not None and r['break_strain'] is None for r in results)
                 index=data['choices'].index(data['trial'].get());label,raw=data['trials'][index]
                 selected=options[label];thickness=selected['thickness'];lo=selected['fit_min'];hi=selected['fit_max']
-                x=raw[:,2]/length*100+selected['plot_shift'];y=raw[:,1]/(width*thickness)
+                origin=selected.get('plot_origin',0)
+                x=raw[:,2]/length*100-origin+selected['plot_shift'];y=raw[:,1]/(width*thickness)
                 if self.smooth.get() and results[index] is not None:y,_=core.plot_values(results[index],True)
                 if data['show_ss'].get():
                     keep=x>=0
-                    if keep.any():curves.append((Path(p).stem,x[keep],y[keep],lo+selected['plot_shift'],hi+selected['plot_shift']))
+                    if keep.any():curves.append((Path(p).stem,x[keep],y[keep],lo-origin+selected['plot_shift'],hi-origin+selected['plot_shift']))
             except ValueError:
                 for var in data['stats']:var.set('—')
             detail=data.get('detail')

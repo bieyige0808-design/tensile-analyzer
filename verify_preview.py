@@ -15,8 +15,7 @@ assert len(app.plot.find_all())>20
 app.items[first]['trial'].set(app.items[first]['choices'][1]);app.draw_preview()
 assert len(app.plot.find_withtag('sample_curve'))==2
 app.items[first]['fit_lo'].set('0.10');app.items[first]['fit_hi'].set('0.30');app.draw_preview()
-assert app.items[first]['results'][0]['fit_min']==.10
-assert app.items[first]['results'][0]['fit_max']==.30
+assert abs(app.items[first]['results'][0]['fit_max']-app.items[first]['results'][0]['fit_min']-.2)<1e-10
 assert len(app.plot.find_withtag('fit_range'))==2
 app.params['Gauge length (mm)'].set('30');app.draw_preview()
 app.select_sample(second);app.draw_preview()

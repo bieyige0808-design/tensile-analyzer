@@ -32,7 +32,8 @@ with tempfile.TemporaryDirectory() as d:
     configs=[(p,4,.01,20,{},.05,.25,app.trial_options(data),None,False)]
     results=core.process_files(configs,output,emit=lambda _:None)
     assert not results[p.stem][0][1]['included']
-    assert results[p.stem][0][1]['fit_min']==.1
+    assert results[p.stem][0][1]['auto_fit'] is True
+    assert abs(results[p.stem][0][1]['fit_max']-results[p.stem][0][1]['fit_min']-.2)<1e-10
     wb=load_workbook(output)
     assert wb['Summary']['N2'].value=='No'
     assert abs(wb['Properties']['Q2'].value-expected)<1e-8
@@ -45,6 +46,7 @@ with tempfile.TemporaryDirectory() as d:
     assert all(ws.freeze_panes is None for ws in wb)
     assert chart.series[0].errBars.noEndCap is False
     assert len(wb['Stress_Strain']._charts[0].series)==0
-    assert abs(wb['Trial_001']['X5'].value-wb['Trial_001']['S5'].value-.5)<1e-9
+    origin=results[p.stem][1][1]['plot_origin']
+    assert abs(wb['Trial_001']['X5'].value-wb['Trial_001']['S5'].value-.5+origin)<1e-9
 root.destroy()
 print('Trial overrides, exclusion, persistence, export and chart layout verified')

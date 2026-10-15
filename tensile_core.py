@@ -39,7 +39,28 @@ def read_trials(path):
     if not trials: raise ValueError('No numeric trials found')
     return trials
 
-def analyze_trial(raw,width,thickness,length,fit_min=.05,fit_max=.25,drop=.5,override=None):
+def maximum_modulus_window(strain,stress,window_percent=.2):
+    """Find the steepest least-squares slope in a complete fixed-strain window."""
+    x=np.asarray(strain,dtype=float);y=np.asarray(stress,dtype=float);span=window_percent/100
+    starts=np.flatnonzero(x+span<=x[-1]+1e-12)
+    if not len(starts):raise ValueError('Pre-fracture strain span is shorter than 0.20%')
+    ends=np.searchsorted(x,x[starts]+span+1e-12,side='right')
+    n=ends-starts
+    def sums(values):
+        p=np.r_[0.,np.cumsum(values)];return p[ends]-p[starts]
+    sx,sy,sxx,sxy=sums(x),sums(y),sums(x*x),sums(x*y)
+    denom=n*sxx-sx*sx
+    slopes=np.full(len(starts),-np.inf)
+    valid=(n>=3)&(denom>1e-20)
+    slopes[valid]=(n[valid]*sxy[valid]-sx[valid]*sy[valid])/denom[valid]
+    if not np.isfinite(slopes).any():raise ValueError('Not enough distinct points in a complete 0.20% window')
+    best=float(np.max(slopes));tolerance=max(abs(best)*1e-9,1e-8)
+    # Choose the earliest numerically equivalent interval for a stable result.
+    index=int(np.flatnonzero(slopes>=best-tolerance)[0])
+    lower=float(x[starts[index]]*100)
+    return lower,lower+window_percent
+
+def analyze_trial(raw,width,thickness,length,fit_min=.05,fit_max=.25,drop=.5,override=None,auto_fit=False):
     if min(width,thickness,length)<=0: raise ValueError('Dimensions must be positive')
     if not 0<=fit_min<fit_max or not 0<drop<1: raise ValueError('Invalid fitting range or drop fraction')
     time,force,stroke=raw.T
@@ -69,6 +90,7 @@ def analyze_trial(raw,width,thickness,length,fit_min=.05,fit_max=.25,drop=.5,ove
             break
         status='detected' if break_idx is not None else 'not detected'
     upto=break_idx+1 if break_idx is not None else len(stress)
+    if auto_fit:fit_min,fit_max=maximum_modulus_window(strain[:upto],stress[:upto])
     mask=(strain*100>=fit_min)&(strain*100<=fit_max)&(np.arange(len(strain))<upto)
     if mask.sum()<3 or np.ptp(strain[mask])<=0:
         raise ValueError('Fewer than three points in the modulus fitting range')
@@ -81,7 +103,7 @@ def analyze_trial(raw,width,thickness,length,fit_min=.05,fit_max=.25,drop=.5,ove
         break_strain=float(strain[break_idx]*100) if break_idx is not None else None,
         toughness=float(np.trapezoid(stress[:upto],strain[:upto])) if break_idx is not None else None,
         r2=r2,intercept=float(intercept),fit_min=fit_min,fit_max=fit_max,
-        width=width,thickness=thickness,length=length)
+        width=width,thickness=thickness,length=length,auto_fit=auto_fit,plot_origin=fit_min if auto_fit else 0)
 
 def text_style():
     cp=CharacterProperties(latin=DFont(typeface='Arial'),sz=1400,b=False)
@@ -131,7 +153,7 @@ def plot_values(result,smooth):
 def export_excel(samples,path,smooth=False):
     wb=Workbook(); bars=wb.active; bars.title='Properties'
     overview=wb.create_sheet('Stress_Strain'); summary=wb.create_sheet('Summary')
-    headers=['Sample','Trial','Break status','Strength (MPa)','Modulus (GPa)','Break strain (%)','Toughness (MJ/m3)','Fit R2','Width (mm)','Thickness (mm)','Gauge length (mm)','Fit min (%)','Fit max (%)','Included in mean','Plot shift (%)']
+    headers=['Sample','Trial','Break status','Strength (MPa)','Modulus (GPa)','Break strain (%)','Toughness (MJ/m3)','Fit R2','Width (mm)','Thickness (mm)','Gauge length (mm)','Fit min (%)','Fit max (%)','Included in mean','Plot shift (%)','Plot origin (%)']
     summary.append(headers)
     barheaders=['Sample','Strength mean (MPa)','Strength SD (MPa)','Modulus mean (GPa)','Modulus SD (GPa)','Representative trial']
     for j,h in enumerate(barheaders,16): bars.cell(1,j,h)
@@ -146,7 +168,7 @@ def export_excel(samples,path,smooth=False):
             if rep[1].get('show_ss',True):representatives.append((name,*rep))
         for j,v in enumerate([name,stats['strength'][0],stats['strength'][1],stats['modulus'][0],stats['modulus'][1],rep[0] if rep else None],16): bars.cell(sample_idx,j,v)
         for label,r in trials:
-            summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max'],'Yes' if r.get('included',True) else 'No',r.get('plot_shift',0)])
+            summary.append([name,label,r['break_status'],*[r[k] for k in metrics],r['r2'],r['width'],r['thickness'],r['length'],r['fit_min'],r['fit_max'],'Yes' if r.get('included',True) else 'No',r.get('plot_shift',0),r.get('plot_origin',0)])
             ws=wb.create_sheet(f'Trial_{len(wb.worksheets)-3:03d}')
             ws.cell(1,16,name); ws.cell(2,16,label)
             cols=['Time (s)','Force (N)','Stroke (mm)','Strain (%)','Stress (MPa)','Plot stress (MPa)','Modulus fit (MPa)','Fracture marker','Plot strain (%)']
@@ -155,7 +177,7 @@ def export_excel(samples,path,smooth=False):
             for i in range(len(r['stress'])):
                 strain=r['strain'][i]*100
                 fit=r['modulus']*1000*r['strain'][i]+r['intercept'] if r['fit_min']<=strain<=r['fit_max'] else None
-                vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None,strain+r.get('plot_shift',0)]
+                vals=[*r['raw'][i],strain,r['stress'][i],plot[i],fit,'Fracture' if i==r['break_index'] else None,strain-r.get('plot_origin',0)+r.get('plot_shift',0)]
                 for j,v in enumerate(vals,16): ws.cell(i+5,j,float(v) if isinstance(v,np.generic) else v)
             chart=ScatterChart(); format_chart(chart,'Strain (%)','Stress (MPa)')
             for ycol,title,count in [(21,'Stress',end),(22,'Modulus fit',len(r['stress']))]:
@@ -168,7 +190,7 @@ def export_excel(samples,path,smooth=False):
     for n,(name,label,r) in enumerate(representatives):
         col=16+n*2; overview.cell(1,col,name); overview.cell(2,col,'Strain (%)'); overview.cell(2,col+1,'Stress (MPa)')
         plot,end=plot_values(r,smooth)
-        for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100+r.get('plot_shift',0))); overview.cell(i+3,col+1,float(plot[i]))
+        for i in range(end): overview.cell(i+3,col,float(r['strain'][i]*100-r.get('plot_origin',0)+r.get('plot_shift',0))); overview.cell(i+3,col+1,float(plot[i]))
         series=Series(Reference(overview,min_col=col+1,min_row=3,max_row=end+2),Reference(overview,min_col=col,min_row=3,max_row=end+2),title=name)
         series.graphicalProperties.line.width=12700; chart.series.append(series)
     chart.legend.position='t';chart.legend.overlay=False
@@ -226,7 +248,7 @@ def process_files(configs,path,fit_min=.05,fit_max=.25,drop=.5,smooth=False,emit
         for label,raw in read_trials(file):
             emit(f'{name}: {label}')
             options=trial_settings.get(label,{})
-            result=analyze_trial(raw,width,options.get('thickness',thickness),length,options.get('fit_min',sample_fit_min),options.get('fit_max',sample_fit_max),drop,overrides.get(label))
+            result=analyze_trial(raw,width,options.get('thickness',thickness),length,options.get('fit_min',sample_fit_min),options.get('fit_max',sample_fit_max),drop,overrides.get(label),auto_fit=options.get('auto_fit',False))
             result['included']=options.get('included',True)
             result['representative']=label==representative
             result['plot_shift']=options.get('plot_shift',0)
